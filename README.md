@@ -9,6 +9,9 @@
 
 ---
 
+> [!NOTE]
+> The APK version will be released soon with a great UI and functionality. Until then, please use the setup instructions below and enjoy listening!
+
 ## 🚀 Key Technical Highlights
 
 This project goes beyond a standard music player by solving complex real-world engineering challenges:
