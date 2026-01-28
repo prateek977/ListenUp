@@ -1,0 +1,179 @@
+package com.example.listenup.data.repository
+
+import com.example.listenup.data.local.dao.SongDao
+import com.example.listenup.data.local.entity.DownloadedSongEntity
+import com.example.listenup.data.local.entity.FavoriteSongEntity
+import com.example.listenup.data.local.entity.RecentlyPlayedEntity
+import com.example.listenup.data.mapper.toDomain
+import com.example.listenup.data.mapper.toEntity
+import com.example.listenup.data.mapper.toSong
+import com.example.listenup.data.remote.PipedApi
+import com.example.listenup.di.PipedBaseUrls
+import com.example.listenup.domain.model.Song
+import com.google.gson.Gson
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
+import retrofit2.Retrofit
+import retrofit2.converter.gson.GsonConverterFactory
+import javax.inject.Inject
+import javax.inject.Singleton
+
+@Singleton
+class MusicRepository @Inject constructor(
+    private val songDao: SongDao,
+    @PipedBaseUrls private val baseUrls: List<String>,
+    private val gson: Gson
+) {
+    
+    private val apiCache = mutableMapOf<String, PipedApi>()
+    
+    private fun getApi(baseUrl: String): PipedApi {
+        return apiCache.getOrPut(baseUrl) {
+            Retrofit.Builder()
+                .baseUrl(baseUrl)
+                .addConverterFactory(GsonConverterFactory.create(gson))
+                .build()
+                .create(PipedApi::class.java)
+        }
+    }
+    
+    suspend fun searchSongs(query: String): List<Song> {
+        android.util.Log.d("MusicRepository", "Starting search for: $query")
+        
+        for (url in baseUrls) {
+            try {
+                android.util.Log.d("MusicRepository", "Trying search on: $url")
+                val api = getApi(url)
+                val response = api.search(query)
+                android.util.Log.d("MusicRepository", "Response received from: $url")
+                android.util.Log.d("MusicRepository", "Items count: ${response.items?.size ?: 0}")
+                
+                val songs = response.items
+                    ?.filter { item ->
+                        val isValid = item.type == "stream" && item.url != null
+                        android.util.Log.d("MusicRepository", "Item: ${item.title}, type: ${item.type}, url: ${item.url}, valid: $isValid")
+                        isValid
+                    }
+                    ?.map { it.toSong() }
+                    ?: emptyList()
+                
+                android.util.Log.d("MusicRepository", "Filtered songs count: ${songs.size}")
+                
+                if (songs.isNotEmpty()) {
+                    // Cache songs in database
+                    songDao.insertSongs(songs.map { it.toEntity() })
+                    android.util.Log.d("MusicRepository", "Successfully cached ${songs.size} songs")
+                    return songs
+                } else {
+                    android.util.Log.w("MusicRepository", "No valid songs found on $url, trying next instance")
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("MusicRepository", "Failed on $url: ${e.message}", e)
+                e.printStackTrace()
+                continue
+            }
+        }
+        
+        android.util.Log.e("MusicRepository", "All instances failed, returning empty list")
+        return emptyList()
+    }
+    
+    suspend fun getTrendingSongs(): List<Song> {
+        // Piped doesn't have a dedicated trending endpoint
+        // We'll use popular search terms as a workaround
+        return searchSongs("music 2024")
+    }
+    
+    suspend fun getStreamUrl(videoId: String): String? {
+        android.util.Log.d("MusicRepository", "Getting stream URL for video: $videoId")
+        
+        for (url in baseUrls) {
+            try {
+                android.util.Log.d("MusicRepository", "Trying stream on: $url")
+                val api = getApi(url)
+                val response = api.getStream(videoId)
+                android.util.Log.d("MusicRepository", "Stream response received, audio streams: ${response.audioStreams.size}")
+                
+                val stream = response.audioStreams
+                    .filter { it.mimeType.startsWith("audio") }
+                    .maxByOrNull { 
+                        when (it.quality) {
+                            "high" -> 3
+                            "medium" -> 2
+                            "low" -> 1
+                            else -> 0
+                        }
+                    }
+                
+                if (stream != null) {
+                    android.util.Log.d("MusicRepository", "Stream found on: $url, quality: ${stream.quality}, format: ${stream.format}")
+                    return stream.url
+                } else {
+                    android.util.Log.w("MusicRepository", "No audio stream found on $url")
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("MusicRepository", "Stream failed on: $url - ${e.message}", e)
+                continue
+            }
+        }
+        
+        android.util.Log.e("MusicRepository", "Failed to get stream URL for $videoId from all instances")
+        return null
+    }
+    
+    // Favorites
+    suspend fun toggleFavorite(song: Song) {
+        if (songDao.isFavorite(song.id)) {
+            songDao.removeFromFavorites(song.id)
+        } else {
+            songDao.insertSong(song.toEntity())
+            songDao.addToFavorites(FavoriteSongEntity(song.id))
+        }
+    }
+    
+    fun getFavoriteSongs(): Flow<List<Song>> {
+        return songDao.getFavoriteSongs().map { entities ->
+            entities.map { it.toDomain() }
+        }
+    }
+    
+    fun isFavorite(songId: String): Flow<Boolean> {
+        return songDao.isFavoriteFlow(songId)
+    }
+    
+    // Downloads
+    suspend fun markAsDownloaded(song: Song, filePath: String) {
+        songDao.insertSong(song.toEntity())
+        songDao.addDownload(DownloadedSongEntity(song.id, filePath))
+    }
+    
+    suspend fun removeDownload(songId: String) {
+        songDao.removeDownload(songId)
+    }
+    
+    fun getDownloadedSongs(): Flow<List<Song>> {
+        return songDao.getDownloadedSongs().map { entities ->
+            entities.map { it.toDomain() }
+        }
+    }
+    
+    fun isDownloaded(songId: String): Flow<Boolean> {
+        return songDao.isDownloadedFlow(songId)
+    }
+    
+    suspend fun getDownloadPath(songId: String): String? {
+        return songDao.getDownloadInfo(songId)?.filePath
+    }
+    
+    // Recently Played
+    suspend fun addToRecentlyPlayed(song: Song) {
+        songDao.insertSong(song.toEntity())
+        songDao.addToRecentlyPlayed(RecentlyPlayedEntity(song.id))
+    }
+    
+    fun getRecentlyPlayed(limit: Int = 20): Flow<List<Song>> {
+        return songDao.getRecentlyPlayed(limit).map { entities ->
+            entities.map { it.toDomain() }
+        }
+    }
+}
