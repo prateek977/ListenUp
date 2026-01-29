@@ -27,14 +27,25 @@ class InnerTubeApi @Inject constructor() {
         .build()
 
     suspend fun getStreamUrl(videoId: String): String? {
-        // Try Android client first (best quality)
-        var streamUrl = getStreamUrlWithClient(videoId, ClientType.ANDROID)
-        if (streamUrl != null) return streamUrl
+        // Try clients in order of reliability
+        // If one fails (403 or network error), we automatically try the next
+        val clients = listOf(
+            ClientType.IOS,
+            ClientType.ANDROID_VR,
+            ClientType.TV,
+            ClientType.ANDROID
+        )
+
+        for (client in clients) {
+            Log.d(TAG, "Attempting stream with client: ${client.name}")
+            val streamUrl = getStreamUrlWithClient(videoId, client)
+            if (streamUrl != null) {
+                Log.d(TAG, "✅ Success with client: ${client.name}")
+                return streamUrl
+            }
+        }
         
-        // Fallback to iOS client (often more reliable for music)
-        streamUrl = getStreamUrlWithClient(videoId, ClientType.IOS)
-        if (streamUrl != null) return streamUrl
-        
+        Log.e(TAG, "❌ All InnerTube clients failed")
         return null
     }
 
@@ -120,8 +131,16 @@ class InnerTubeApi @Inject constructor() {
                 }
                 
                 if (bestUrl != null) {
-                    Log.d(TAG, "✅ Found stream URL: ${bestUrl.take(50)}...")
-                    return@withContext bestUrl
+                    Log.d(TAG, "Found potential stream URL: ${bestUrl.take(50)}...")
+                    
+                    // Verify the URL is actually playable (not 403)
+                    if (checkVideoUrl(bestUrl, clientType)) {
+                        Log.d(TAG, "✅ Stream URL is valid and playable")
+                        return@withContext bestUrl
+                    } else {
+                        Log.w(TAG, "❌ Stream URL found but rejected (403/Unplayable)")
+                        return@withContext null
+                    }
                 } else {
                     Log.w(TAG, "No usable stream URL found in response")
                     return@withContext null
@@ -169,8 +188,42 @@ class InnerTubeApi @Inject constructor() {
         ),
         IOS(
             "IOS", 
-            "19.29.1",
-            "com.google.ios.youtube/19.29.1 (iPhone14,5; U; CPU iOS 17_5_1 like Mac OS X)"
+            "19.45.4",
+            "com.google.ios.youtube/19.45.4 (iPhone14,5; U; CPU iOS 17_5_1 like Mac OS X)"
+        ),
+        ANDROID_VR(
+            "ANDROID_VR",
+            "13.50.53",
+            "com.google.android.apps.youtube.vr/13.50.53 (Linux; Android 11; QUEST 2 Build/RQ3A.211001.001)"
+        ),
+        TV(
+            "ANDROID_TV",
+            "6.17.53",
+            "com.google.android.youtube.tv/6.17.53 (Linux; GoogleTV 3.2; en_US)"
         )
+    }
+
+    private fun checkVideoUrl(url: String, clientType: ClientType): Boolean {
+        return try {
+            val request = Request.Builder()
+                .url(url)
+                .head() // Use HEAD to check without downloading
+                .addHeader("User-Agent", clientType.userAgent)
+                .build()
+
+            val response = client.newCall(request).execute()
+            val isSuccess = response.isSuccessful
+            
+            response.close()
+            
+            if (!isSuccess) {
+                Log.w(TAG, "URL check failed: ${response.code}")
+            }
+            
+            isSuccess
+        } catch (e: Exception) {
+            Log.e(TAG, "Error checking URL: ${e.message}")
+            false
+        }
     }
 }

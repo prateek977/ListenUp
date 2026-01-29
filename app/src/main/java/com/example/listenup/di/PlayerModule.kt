@@ -20,7 +20,7 @@ object PlayerModule {
     fun provideExoPlayer(@ApplicationContext context: Context): ExoPlayer {
         // Create HTTP DataSource factory with user agent
         val dataSourceFactory = DefaultHttpDataSource.Factory()
-            .setUserAgent("Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36")
+            .setUserAgent("com.google.ios.youtube/19.45.4 (iPhone14,5; U; CPU iOS 17_5_1 like Mac OS X)")
             .setConnectTimeoutMs(30000)
             .setReadTimeoutMs(30000)
             .setAllowCrossProtocolRedirects(true)
