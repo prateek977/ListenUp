@@ -14,15 +14,13 @@ import androidx.core.view.WindowCompat
 
 private val DarkColorScheme = darkColorScheme(
     primary = SpotifyGreen,
-    onPrimary = SpotifyBlack,
-    secondary = SpotifyGray,
-    onSecondary = SpotifyWhite,
-    background = SpotifyBlack,
-    onBackground = SpotifyWhite,
-    surface = SpotifyDarkGray,
-    onSurface = SpotifyWhite,
-    surfaceVariant = SpotifyGray,
-    onSurfaceVariant = SpotifyLightGray
+    onPrimary = DesignSystemBaseSurface,
+    background = DesignSystemBaseSurface,
+    onBackground = DesignSystemTextPrimary,
+    surface = DesignSystemBaseSurface,
+    onSurface = DesignSystemTextPrimary,
+    surfaceVariant = DesignSystemRaisedSurface,
+    onSurfaceVariant = DesignSystemTextSecondary
 )
 
 private val LightColorScheme = lightColorScheme(

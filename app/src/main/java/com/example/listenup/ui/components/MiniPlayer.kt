@@ -24,66 +24,85 @@ import com.example.listenup.domain.model.Song
 fun MiniPlayer(
     song: Song,
     isPlaying: Boolean,
+    currentPosition: Long = 0L,
+    duration: Long = 0L,
     onPlayPauseClick: () -> Unit,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Surface(
-        color = MaterialTheme.colorScheme.surfaceColorAtElevation(3.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = RoundedCornerShape(8.dp),
         modifier = modifier
             .fillMaxWidth()
-            .height(64.dp)
+            .padding(horizontal = 8.dp, vertical = 4.dp)
+            .height(56.dp)
             .clickable(onClick = onClick),
-        tonalElevation = 8.dp
+        shadowElevation = 8.dp
     ) {
-        // Progress indicator could be added here at the top/bottom if desired
-        
-        Row(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            // Thumbnail
-            AsyncImage(
-                model = song.thumbnailUrl,
-                contentDescription = "Song Thumbnail",
-                contentScale = ContentScale.Crop,
+        Box(modifier = Modifier.fillMaxSize()) {
+            Row(
                 modifier = Modifier
-                    .size(48.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
-            )
-            
-            Spacer(modifier = Modifier.width(12.dp))
-            
-            // Info
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.Center
+                    .fillMaxSize()
+                    .padding(horizontal = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = song.title,
-                    style = MaterialTheme.typography.bodyMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    color = MaterialTheme.colorScheme.onSurface
+                // Thumbnail
+                AsyncImage(
+                    model = song.thumbnailUrl,
+                    contentDescription = "Song Thumbnail",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
                 )
-                Text(
-                    text = song.artist,
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                
+                Spacer(modifier = Modifier.width(12.dp))
+                
+                // Info
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Text(
+                        text = song.title,
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = song.artist,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                
+                // Controls
+                IconButton(onClick = onPlayPauseClick) {
+                    Icon(
+                        imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        contentDescription = if (isPlaying) "Pause" else "Play",
+                        tint = MaterialTheme.colorScheme.onSurface
+                    )
+                }
             }
             
-            // Controls
-            IconButton(onClick = onPlayPauseClick) {
-                Icon(
-                    imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                    contentDescription = if (isPlaying) "Pause" else "Play",
-                    tint = MaterialTheme.colorScheme.primary
+            // Timeline progress bar at the bottom
+            if (duration > 0) {
+                val progress = (currentPosition.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
+                LinearProgressIndicator(
+                    progress = { progress },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(2.dp)
+                        .align(Alignment.BottomCenter)
+                        .clip(RoundedCornerShape(bottomStart = 8.dp, bottomEnd = 8.dp)),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    trackColor = Color.Transparent,
                 )
             }
         }

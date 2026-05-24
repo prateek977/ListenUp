@@ -12,10 +12,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
+import com.example.listenup.data.local.entity.toSavedEntity
 import org.schabi.newpipe.extractor.InfoItem
 import org.schabi.newpipe.extractor.NewPipe
 import org.schabi.newpipe.extractor.ServiceList
 import org.schabi.newpipe.extractor.stream.StreamInfoItem
+import org.schabi.newpipe.extractor.playlist.PlaylistInfoItem
+import com.example.listenup.domain.model.YoutubePlaylist
 import javax.inject.Inject
 import javax.inject.Named
 import javax.inject.Singleton
@@ -25,7 +28,8 @@ class NewPipeMusicRepository @Inject constructor(
     private val songDao: SongDao,
     private val innerTubeApi: com.example.listenup.data.remote.InnerTubeApi,
     private val pipedApi: PipedApi,
-    @Named("PipedUrls") private val pipedUrls: List<String>
+    @Named("PipedUrls") private val pipedUrls: List<String>,
+    private val savedPlaylistDao: com.example.listenup.data.local.dao.SavedYoutubePlaylistDao
 ) {
     
     companion object {
@@ -52,7 +56,7 @@ class NewPipeMusicRepository @Inject constructor(
                         // Extract video ID from the URL
                         val videoId = when {
                             item.url.contains("watch?v=") -> item.url.substringAfter("watch?v=").substringBefore("&")
-                            item.url.contains("/") -> item.url.substringAfterLast("/")
+                            item.url.contains("/") -> item.url.substringAfterLast("/").substringBefore("?").substringBefore("&")
                             else -> item.url
                         }
                         
@@ -82,6 +86,72 @@ class NewPipeMusicRepository @Inject constructor(
                 songs
             } catch (e: Exception) {
                 Log.e(TAG, "NewPipe search failed: ${e.message}", e)
+                emptyList()
+            }
+        }
+    }
+
+    suspend fun searchPlaylists(query: String): List<YoutubePlaylist> {
+        return withContext(Dispatchers.IO) {
+            try {
+                Log.d(TAG, "Starting NewPipe playlist search for: $query")
+                val service = ServiceList.YouTube
+                val searchExtractor = service.getSearchExtractor(query)
+                searchExtractor.fetchPage()
+                
+                searchExtractor.initialPage.items
+                    .filterIsInstance<PlaylistInfoItem>()
+                    .map { item ->
+                        val absoluteUrl = if (item.url.startsWith("/")) "https://www.youtube.com${item.url}" else item.url
+                        YoutubePlaylist(
+                            id = item.url.substringAfter("list=").substringBefore("&"),
+                            title = item.name ?: "Unknown Playlist",
+                            author = item.uploaderName ?: "Unknown Creator",
+                            thumbnailUrl = item.thumbnails.firstOrNull()?.url ?: "",
+                            songCount = item.streamCount,
+                            url = absoluteUrl
+                        )
+                    }
+            } catch (e: Exception) {
+                Log.e(TAG, "NewPipe playlist search failed: ${e.message}", e)
+                emptyList()
+            }
+        }
+    }
+
+    suspend fun getPlaylistSongs(url: String): List<Song> {
+        return withContext(Dispatchers.IO) {
+            try {
+                Log.d(TAG, "Fetching playlist songs for: $url")
+                val service = ServiceList.YouTube
+                val extractor = service.getPlaylistExtractor(url)
+                extractor.fetchPage()
+                
+                extractor.initialPage.items
+                    .filterIsInstance<StreamInfoItem>()
+                    .map { item ->
+                        val videoId = when {
+                            item.url.contains("watch?v=") -> item.url.substringAfter("watch?v=").substringBefore("&")
+                            item.url.contains("/") -> item.url.substringAfterLast("/").substringBefore("?").substringBefore("&")
+                            else -> item.url
+                        }
+                        
+                        val absoluteUrl = if (item.url.startsWith("/")) "https://www.youtube.com${item.url}" else item.url
+                        
+                        Song(
+                            id = videoId,
+                            title = item.name ?: "Unknown Title",
+                            artist = item.uploaderName ?: "Unknown Artist",
+                            thumbnailUrl = item.thumbnails.firstOrNull()?.url ?: "",
+                            duration = item.duration,
+                            uploadDate = item.uploadDate?.offsetDateTime()?.toString() ?: "",
+                            viewCount = item.viewCount,
+                            isLiked = false,
+                            isDownloaded = false
+                        )
+                    }
+            } catch (e: Exception) {
+                Log.e(TAG, "NewPipe playlist extraction failed: ${e.message}", e)
                 emptyList()
             }
         }
@@ -249,5 +319,24 @@ class NewPipeMusicRepository @Inject constructor(
     
     suspend fun getDownloadPath(songId: String): String? {
         return songDao.getDownload(songId)?.filePath
+    }
+    
+    // Saved YouTube Playlists
+    suspend fun saveYoutubePlaylist(playlist: YoutubePlaylist) {
+        savedPlaylistDao.insertPlaylist(playlist.toSavedEntity())
+    }
+    
+    suspend fun removeYoutubePlaylist(playlistId: String) {
+        savedPlaylistDao.deletePlaylistById(playlistId)
+    }
+    
+    fun isPlaylistSaved(playlistId: String): Flow<Boolean> {
+        return savedPlaylistDao.isSavedFlow(playlistId)
+    }
+    
+    fun getSavedYoutubePlaylists(): Flow<List<YoutubePlaylist>> {
+        return savedPlaylistDao.getAllSavedPlaylists().map { entities ->
+            entities.map { it.toYoutubePlaylist() }
+        }
     }
 }

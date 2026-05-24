@@ -27,11 +27,13 @@ import com.example.listenup.ui.player.PlayerViewModel
 
 @Composable
 fun LibraryScreen(
+    navController: androidx.navigation.NavController,
     libraryViewModel: LibraryViewModel = hiltViewModel(),
     playerViewModel: PlayerViewModel = hiltViewModel(),
     modifier: Modifier = Modifier
 ) {
     val playlists by libraryViewModel.playlists.collectAsState()
+    val savedYoutubePlaylists by libraryViewModel.savedYoutubePlaylists.collectAsState()
     val favoriteSongs by libraryViewModel.favoriteSongs.collectAsState()
     val downloadedSongs by libraryViewModel.downloadedSongs.collectAsState()
     
@@ -103,6 +105,23 @@ fun LibraryScreen(
                     items(playlists) { playlist ->
                         PlaylistItem(playlist = playlist, onClick = { /* Navigate to playlist detail */ })
                     }
+                    items(savedYoutubePlaylists) { savedPlaylist ->
+                        SavedYoutubePlaylistItem(
+                            playlist = savedPlaylist,
+                            onClick = { 
+                                navController.navigate(
+                                    com.example.listenup.ui.navigation.Screen.PlaylistDetail.createRoute(
+                                        url = savedPlaylist.url,
+                                        title = savedPlaylist.title,
+                                        thumbnailUrl = savedPlaylist.thumbnailUrl,
+                                        id = savedPlaylist.id,
+                                        author = savedPlaylist.author,
+                                        songCount = savedPlaylist.songCount
+                                    )
+                                )
+                            }
+                        )
+                    }
                 }
                 1 -> {
                     items(favoriteSongs) { song ->
@@ -120,6 +139,18 @@ fun LibraryScreen(
                         )
                     }
                 }
+            }
+            
+            // Footer
+            item {
+                Spacer(modifier = Modifier.height(48.dp))
+                Text(
+                    text = "Created By ZaheerChoudhari",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 32.dp),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
             }
         }
     }
@@ -171,6 +202,46 @@ fun PlaylistItem(playlist: Playlist, onClick: () -> Unit) {
                 text = "${playlist.songCount} songs",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+fun SavedYoutubePlaylistItem(playlist: com.example.listenup.domain.model.YoutubePlaylist, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .clickable { onClick() }
+            .padding(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        AsyncImage(
+            model = playlist.thumbnailUrl,
+            contentDescription = "Cover",
+            contentScale = ContentScale.Crop,
+            modifier = Modifier
+                .size(56.dp)
+                .clip(RoundedCornerShape(4.dp))
+        )
+        Spacer(modifier = Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = playlist.title,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onBackground,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+            )
+            Text(
+                text = "${playlist.songCount} songs • ${playlist.author}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
             )
         }
     }

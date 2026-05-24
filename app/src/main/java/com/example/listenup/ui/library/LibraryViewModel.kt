@@ -6,6 +6,7 @@ import com.example.listenup.data.repository.NewPipeMusicRepository
 import com.example.listenup.data.repository.PlaylistRepository
 import com.example.listenup.domain.model.Playlist
 import com.example.listenup.domain.model.Song
+import com.example.listenup.domain.model.YoutubePlaylist
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -20,6 +21,9 @@ class LibraryViewModel @Inject constructor(
 ) : ViewModel() {
 
     val playlists: StateFlow<List<Playlist>> = playlistRepository.getAllPlaylists()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val savedYoutubePlaylists: StateFlow<List<YoutubePlaylist>> = musicRepository.getSavedYoutubePlaylists()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val favoriteSongs: StateFlow<List<Song>> = musicRepository.getFavoriteSongs()

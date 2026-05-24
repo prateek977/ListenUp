@@ -71,8 +71,9 @@ object NetworkModule {
         songDao: SongDao,
         innerTubeApi: com.example.listenup.data.remote.InnerTubeApi,
         pipedApi: PipedApi,
-        @Named("PipedUrls") pipedUrls: List<String>
+        @Named("PipedUrls") pipedUrls: List<String>,
+        savedPlaylistDao: com.example.listenup.data.local.dao.SavedYoutubePlaylistDao
     ): NewPipeMusicRepository {
-        return NewPipeMusicRepository(songDao, innerTubeApi, pipedApi, pipedUrls)
+        return NewPipeMusicRepository(songDao, innerTubeApi, pipedApi, pipedUrls, savedPlaylistDao)
     }
 }

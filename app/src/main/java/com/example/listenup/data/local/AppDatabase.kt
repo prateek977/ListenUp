@@ -4,6 +4,7 @@ import androidx.room.Database
 import androidx.room.RoomDatabase
 import com.example.listenup.data.local.dao.PlaylistDao
 import com.example.listenup.data.local.dao.SongDao
+import com.example.listenup.data.local.dao.SavedYoutubePlaylistDao
 import com.example.listenup.data.local.entity.*
 
 @Database(
@@ -13,12 +14,14 @@ import com.example.listenup.data.local.entity.*
         PlaylistSongCrossRef::class,
         FavoriteSongEntity::class,
         DownloadedSongEntity::class,
-        RecentlyPlayedEntity::class
+        RecentlyPlayedEntity::class,
+        SavedYoutubePlaylistEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun songDao(): SongDao
     abstract fun playlistDao(): PlaylistDao
+    abstract fun savedYoutubePlaylistDao(): SavedYoutubePlaylistDao
 }

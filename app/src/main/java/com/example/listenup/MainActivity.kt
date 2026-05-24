@@ -12,9 +12,11 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
 import com.example.listenup.ui.components.BottomNavigationBar
 import com.example.listenup.ui.home.HomeScreen
 import com.example.listenup.ui.library.LibraryScreen
@@ -43,6 +45,8 @@ fun MainScreen() {
     val playerViewModel: PlayerViewModel = hiltViewModel()
     val currentSong by playerViewModel.currentSong.collectAsState()
     val isPlaying by playerViewModel.isPlaying.collectAsState()
+    val currentPosition by playerViewModel.currentPosition.collectAsState()
+    val duration by playerViewModel.duration.collectAsState()
     var isPlayerExpanded by remember { mutableStateOf(false) }
 
     LaunchedEffect(currentSong) {
@@ -58,6 +62,8 @@ fun MainScreen() {
                         com.example.listenup.ui.components.MiniPlayer(
                             song = song,
                             isPlaying = isPlaying,
+                            currentPosition = currentPosition,
+                            duration = duration,
                             onPlayPauseClick = { playerViewModel.togglePlayPause() },
                             onClick = { isPlayerExpanded = true }
                         )
@@ -76,14 +82,64 @@ fun MainScreen() {
             ) {
                 composable(Screen.Home.route) {
                     HomeScreen(
-                        onSongClick = { isPlayerExpanded = true }
+                        playerViewModel = playerViewModel,
+                        navController = navController
                     )
                 }
                 composable(Screen.Search.route) {
-                    SearchScreen()
+                    SearchScreen(playerViewModel = playerViewModel)
                 }
                 composable(Screen.Library.route) {
-                    LibraryScreen()
+                    LibraryScreen(navController = navController, playerViewModel = playerViewModel)
+                }
+                composable(
+                    route = Screen.PlaylistDetail.route,
+                    arguments = listOf(
+                        navArgument("url") { type = NavType.StringType },
+                        navArgument("title") { type = NavType.StringType; nullable = true; defaultValue = null },
+                        navArgument("thumbnailUrl") { type = NavType.StringType; nullable = true; defaultValue = null },
+                        navArgument("id") { type = NavType.StringType; nullable = true; defaultValue = null },
+                        navArgument("author") { type = NavType.StringType; nullable = true; defaultValue = null },
+                        navArgument("songCount") { type = NavType.LongType; defaultValue = 0L }
+                    )
+                ) { backStackEntry ->
+                    val url = backStackEntry.arguments?.getString("url")
+                    val title = backStackEntry.arguments?.getString("title")
+                    val thumbnailUrl = backStackEntry.arguments?.getString("thumbnailUrl")
+                    val id = backStackEntry.arguments?.getString("id")
+                    val author = backStackEntry.arguments?.getString("author")
+                    val songCount = backStackEntry.arguments?.getLong("songCount") ?: 0L
+                    
+                    com.example.listenup.ui.playlist.PlaylistDetailScreen(
+                        url = url,
+                        title = title,
+                        thumbnailUrl = thumbnailUrl,
+                        playlistId = id,
+                        author = author,
+                        songCount = songCount,
+                        localType = null,
+                        onBack = { navController.popBackStack() },
+                        playerViewModel = playerViewModel
+                    )
+                }
+                composable(
+                    route = Screen.LocalPlaylist.route,
+                    arguments = listOf(
+                        navArgument("type") { type = NavType.StringType }
+                    )
+                ) { backStackEntry ->
+                    val type = backStackEntry.arguments?.getString("type")
+                    com.example.listenup.ui.playlist.PlaylistDetailScreen(
+                        url = null,
+                        title = null,
+                        thumbnailUrl = null,
+                        playlistId = null,
+                        author = null,
+                        songCount = 0L,
+                        localType = type,
+                        onBack = { navController.popBackStack() },
+                        playerViewModel = playerViewModel
+                    )
                 }
             }
 
@@ -95,6 +151,7 @@ fun MainScreen() {
                 modifier = Modifier.align(Alignment.BottomCenter)
             ) {
                 FullPlayerScreen(
+                    viewModel = playerViewModel,
                     onCollapse = { isPlayerExpanded = false }
                 )
             }

@@ -32,7 +32,8 @@ fun BottomNavigationBar(navController: NavController) {
     val currentRoute = navController.currentBackStackEntryAsState().value?.destination?.route
 
     NavigationBar(
-        containerColor = MaterialTheme.colorScheme.surface
+        containerColor = androidx.compose.ui.graphics.Color.Transparent,
+        contentColor = MaterialTheme.colorScheme.onBackground
     ) {
         items.forEach { item ->
             val selected = currentRoute == item.route
@@ -57,9 +58,9 @@ fun BottomNavigationBar(navController: NavController) {
                     }
                 },
                 colors = NavigationBarItemDefaults.colors(
-                    selectedIconColor = MaterialTheme.colorScheme.primary,
-                    selectedTextColor = MaterialTheme.colorScheme.primary,
-                    indicatorColor = MaterialTheme.colorScheme.surfaceVariant,
+                    selectedIconColor = MaterialTheme.colorScheme.onBackground,
+                    selectedTextColor = MaterialTheme.colorScheme.onBackground,
+                    indicatorColor = androidx.compose.ui.graphics.Color.Transparent,
                     unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
                     unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
                 )
