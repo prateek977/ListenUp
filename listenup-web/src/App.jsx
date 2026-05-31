@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { CLIENT_ID, signInWithGoogleToken, fetchUserData, saveUserData } from './firebase-rest';
 
 export default function App() {
   // Navigation & Search State
@@ -12,10 +11,6 @@ export default function App() {
   const [originalQueue, setOriginalQueue] = useState([]); // for restoring from shuffle
   const [currentSong, setCurrentSong] = useState(null);
   const [isPlaying, setIsPlaying] = useState(false);
-  
-  // Auth State
-  const [currentUser, setCurrentUser] = useState(null);
-  const [firebaseToken, setFirebaseToken] = useState(null);
   
   // Curated Categories State
   const [homeData, setHomeData] = useState({
@@ -102,71 +97,12 @@ export default function App() {
     } else {
       initPlayer();
     }
-
-    // Initialize Google Identity Services
-    const initGoogleSignIn = () => {
-      if (window.google) {
-        window.google.accounts.id.initialize({
-          client_id: CLIENT_ID,
-          callback: handleGoogleCredential
-        });
-        window.google.accounts.id.renderButton(
-          document.getElementById("googleSignInBtn"),
-          { theme: "filled_black", size: "large", width: "100%", shape: "pill" }
-        );
-      }
-    };
-
-    if (window.google) {
-      initGoogleSignIn();
-    } else {
-      // If the script hasn't loaded yet, wait for it
-      const existingScript = document.querySelector('script[src="https://accounts.google.com/gsi/client"]');
-      if (existingScript) {
-        existingScript.addEventListener('load', initGoogleSignIn);
-      }
     }
 
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
   }, []);
-
-  async function handleGoogleCredential(response) {
-    try {
-      const fbData = await signInWithGoogleToken(response.credential);
-      if (fbData) {
-        setCurrentUser(fbData);
-        setFirebaseToken(fbData.idToken);
-        
-        // Fetch their playlists and favorites
-        const userData = await fetchUserData(fbData.localId, fbData.idToken);
-        if (userData) {
-          setPlaylists(userData.playlists || []);
-          setQueue(userData.queue || []);
-        }
-      }
-    } catch (e) {
-      console.error("Google login failed", e);
-      alert("Login failed: " + e.message);
-    }
-  }
-
-  const handleSignOut = () => {
-    setCurrentUser(null);
-    setFirebaseToken(null);
-    setPlaylists([]);
-    setQueue([]);
-    // Re-render the button since we cleared it
-    setTimeout(() => {
-      if (window.google) {
-        window.google.accounts.id.renderButton(
-          document.getElementById("googleSignInBtn"),
-          { theme: "filled_black", size: "large", width: "100%", shape: "pill" }
-        );
-      }
-    }, 100);
-  };
 
   // Listen to document clicks to close playlist dropdowns on click-away
   useEffect(() => {
@@ -205,15 +141,11 @@ export default function App() {
     return () => dialog.removeEventListener('click', handleBackdropClick);
   }, []);
 
-  // Persist playlists and queue to cloud if logged in, otherwise local
+  // Persist playlists and queue to local
   useEffect(() => {
-    if (currentUser && firebaseToken) {
-      saveUserData(currentUser.localId, firebaseToken, playlists, queue);
-    } else {
-      localStorage.setItem('listenup_playlists', JSON.stringify(playlists));
-      localStorage.setItem('listenup_queue', JSON.stringify(queue));
-    }
-  }, [playlists, queue, currentUser, firebaseToken]);
+    localStorage.setItem('listenup_playlists', JSON.stringify(playlists));
+    localStorage.setItem('listenup_queue', JSON.stringify(queue));
+  }, [playlists, queue]);
 
   async function fetchHomeData() {
     setHomeLoading(true);
@@ -568,7 +500,6 @@ export default function App() {
     const isFav = favorites.some(s => s.id === song.id);
     return (
       <div className="flex items-center gap-2 relative">
-        {currentUser && (
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -587,9 +518,7 @@ export default function App() {
               </svg>
             )}
           </button>
-        )}
         
-        {currentUser && (
           <>
             <button
               onClick={(e) => {
@@ -640,8 +569,6 @@ export default function App() {
                 </button>
               </div>
             )}
-          </>
-        )}
       </div>
     );
   };
@@ -669,24 +596,6 @@ export default function App() {
             <p className="text-[10px] text-slate-500 uppercase tracking-widest font-bold">Web Player</p>
           </div>
         </div>
-
-        {/* User Account Section */}
-        <div className="px-4 mb-4">
-          {currentUser ? (
-            <div className="flex items-center gap-3 bg-white/5 border border-white/10 rounded-xl p-3">
-              <div className="w-8 h-8 rounded-full bg-gradient-to-r from-purple-500 to-indigo-500 flex items-center justify-center text-xs font-bold text-white uppercase">
-                {currentUser.email ? currentUser.email[0] : 'U'}
-              </div>
-              <div className="flex-1 overflow-hidden">
-                <p className="text-xs font-medium text-white truncate">{currentUser.email}</p>
-                <button onClick={handleSignOut} className="text-[10px] text-slate-400 hover:text-white transition-colors">Sign Out</button>
-              </div>
-            </div>
-          ) : (
-            <div id="googleSignInBtn" className="w-full"></div>
-          )}
-        </div>
-
         {/* Navigation Tabs */}
         <nav className="flex-1 px-4 py-2 space-y-1.5 overflow-y-auto custom-scrollbar">
           <button
@@ -1130,30 +1039,18 @@ export default function App() {
                     <h2 className="text-3xl font-extrabold text-white text-glow-purple">Playlists</h2>
                     <p className="text-slate-400 text-sm mt-1">Create and manage your custom music collections.</p>
                   </div>
-                  {currentUser && (
-                    <button
-                      onClick={openCreatePlaylistModal}
-                      className="flex items-center gap-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-semibold px-5 py-2.5 rounded-xl shadow-lg shadow-purple-600/20 active:scale-[0.98] transition-all text-sm"
-                    >
-                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor" className="w-4 h-4">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-                      </svg>
-                      Create Playlist
-                    </button>
-                  )}
+                  <button
+                    onClick={openCreatePlaylistModal}
+                    className="flex items-center gap-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-semibold px-5 py-2.5 rounded-xl shadow-lg shadow-purple-600/20 active:scale-[0.98] transition-all text-sm"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor" className="w-4 h-4">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                    </svg>
+                    Create Playlist
+                  </button>
                 </div>
 
-                {!currentUser ? (
-                  <div className="text-center py-20 bg-white/2 rounded-2xl border border-slate-800/20">
-                    <div className="w-16 h-16 rounded-full bg-gradient-to-br from-purple-500/20 to-indigo-500/20 flex items-center justify-center mx-auto mb-4 border border-purple-500/20">
-                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="w-8 h-8 text-purple-400">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
-                      </svg>
-                    </div>
-                    <h4 className="text-white font-bold mb-1">Sign in required</h4>
-                    <p className="text-slate-400 text-sm max-w-sm mx-auto">Please sign in with your Google account from the sidebar to create playlists and save your favorite songs.</p>
-                  </div>
-                ) : playlists.length === 0 ? (
+                {playlists.length === 0 ? (
                   <div className="text-center py-20 bg-white/2 rounded-2xl border border-slate-800/20">
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="w-12 h-12 text-slate-500 mx-auto mb-3">
                       <path strokeLinecap="round" strokeLinejoin="round" d="M12 10.5v11.25m0-11.25a9 9 0 1118 0v11.25m-18 0a9 9 0 0018 0M3.75 13.5h16.5M5.625 4.5h12.75a1.875 1.875 0 010 3.75H5.625a1.875 1.875 0 010-3.75z" />
