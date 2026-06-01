@@ -568,7 +568,39 @@ export default function App() {
       navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
     }
   }, [isPlaying]);
-  // -------------------------------------
+  // --- Android Background Fixes ---
+  useEffect(() => {
+    // 1. Audio Priming (Unlocking)
+    const unlockAudio = () => {
+      if (silentAudioRef.current) {
+        silentAudioRef.current.play().then(() => {
+          silentAudioRef.current.pause();
+          document.removeEventListener('click', unlockAudio);
+          document.removeEventListener('touchstart', unlockAudio);
+        }).catch(() => {});
+      }
+    };
+    document.addEventListener('click', unlockAudio);
+    document.addEventListener('touchstart', unlockAudio);
+
+    // 2. Visibility Change Override
+    const handleVisibilityChange = () => {
+      if (document.hidden && stateRef.current.isPlaying) {
+        // Force YouTube to keep playing or play again immediately if Android paused it
+        if (playerRef.current && playerRef.current.playVideo) {
+          playerRef.current.playVideo();
+        }
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      document.removeEventListener('click', unlockAudio);
+      document.removeEventListener('touchstart', unlockAudio);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, []);
+  // --------------------------------
 
   // Queue Operations
   const playSong = (song) => {
