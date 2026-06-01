@@ -77,11 +77,11 @@ export default function App() {
   const [pendingSongRequests, setPendingSongRequests] = useState([]);
   const socketRef = useRef(null);
 
-
   const playerRef = useRef(null);
   const timerRef = useRef(null);
   const createPlaylistDialogRef = useRef(null);
   const isLoadingSongRef = useRef(false);
+  const silentAudioRef = useRef(null);
   const stateRef = useRef({ currentSong, queue, repeat, isPlaying, shuffle, activeRoom, isHost });
 
   // Sync state ref for YouTube event listeners
@@ -513,8 +513,10 @@ export default function App() {
     if (playerRef.current && playerRef.current.playVideo && playerRef.current.pauseVideo) {
       if (isPlaying) {
         playerRef.current.playVideo();
+        silentAudioRef.current?.play().catch(e => console.log('Silent audio play failed', e));
       } else {
         playerRef.current.pauseVideo();
+        silentAudioRef.current?.pause();
       }
     }
   }, [isPlaying]);
@@ -1055,6 +1057,7 @@ export default function App() {
           {/* Hidden YouTube Video Container (Required by API to be in DOM) */}
           <div className="absolute top-[-9999px] left-[-9999px] opacity-0 pointer-events-none w-[1px] h-[1px] overflow-hidden">
             <div id="yt-player-iframe"></div>
+            <audio ref={silentAudioRef} loop src="data:audio/mp3;base64,//OExAAAAANIAAAAAExBTUUzLjEwMKqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"></audio>
           </div>
           
           {/* Creator Credits */}
