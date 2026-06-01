@@ -526,6 +526,48 @@ export default function App() {
     }
   }, [volume, isMuted]);
 
+  // --- Media Session API Integration ---
+  useEffect(() => {
+    if ('mediaSession' in navigator && currentSong) {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: currentSong.title,
+        artist: currentSong.artist || 'Unknown Artist',
+        artwork: [
+          { src: currentSong.thumbnailUrl, sizes: '512x512', type: 'image/jpeg' }
+        ]
+      });
+
+      try {
+        navigator.mediaSession.setActionHandler('play', () => {
+          setIsPlaying(true);
+        });
+        navigator.mediaSession.setActionHandler('pause', () => {
+          setIsPlaying(false);
+        });
+        navigator.mediaSession.setActionHandler('previoustrack', () => {
+          playPrevious();
+        });
+        navigator.mediaSession.setActionHandler('nexttrack', () => {
+          playNext();
+        });
+        navigator.mediaSession.setActionHandler('seekto', (details) => {
+          if (playerRef.current && playerRef.current.seekTo) {
+            playerRef.current.seekTo(details.seekTime, true);
+          }
+        });
+      } catch (error) {
+        console.log("Media session actions not supported", error);
+      }
+    }
+  }, [currentSong]);
+
+  useEffect(() => {
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
+    }
+  }, [isPlaying]);
+  // -------------------------------------
+
   // Queue Operations
   const playSong = (song) => {
     // If in a room and NOT the host, send request to host instead of playing locally
