@@ -886,7 +886,7 @@ export default function App() {
       )}
 
       {/* Left Sidebar */}
-      <aside className={`fixed md:relative w-64 h-full glass-panel border-r border-slate-800 flex flex-col z-40 transition-transform duration-300 ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
+      <aside className={`fixed md:relative w-64 h-full glass-panel border-r border-slate-800 flex flex-col z-40 pb-20 md:pb-24 transition-transform duration-300 ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
         {/* App Branding */}
         <div className="p-6 flex items-center gap-3">
           <img src="/logo.png" alt="ListenUp Logo" className="h-10 w-auto object-contain drop-shadow-md" />
@@ -1975,7 +1975,7 @@ export default function App() {
       </main>
 
       {/* Sticky Bottom Media Control Bar */}
-      <footer className="h-20 md:h-24 w-full glass-panel border-t border-slate-800 absolute bottom-0 left-0 right-0 z-30 flex items-center justify-between px-2 md:px-6">
+      <footer className="h-20 md:h-24 w-full glass-panel border-t border-slate-800 absolute bottom-0 left-0 right-0 z-50 flex items-center justify-between px-2 md:px-6">
         
         {/* Left: Active Song details */}
         <div className="w-[35%] md:w-1/4 flex items-center gap-2 md:gap-3">
