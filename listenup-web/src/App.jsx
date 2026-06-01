@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { io } from 'socket.io-client';
+import { BackgroundMode } from '@anuradev/capacitor-background-mode';
+import { Capacitor } from '@capacitor/core';
 
 export default function App() {
   // Navigation & Search State
