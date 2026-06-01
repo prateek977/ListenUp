@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { io } from 'socket.io-client';
 
 export default function App() {
   // Navigation & Search State
@@ -6,7 +7,7 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [searchLoading, setSearchLoading] = useState(false);
-
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   // Playback Queue State
   const [originalQueue, setOriginalQueue] = useState([]); // for restoring from shuffle
   const [currentSong, setCurrentSong] = useState(null);
@@ -56,18 +57,37 @@ export default function App() {
   const [isMuted, setIsMuted] = useState(false);
   const [repeat, setRepeat] = useState('off'); // 'off' | 'all' | 'one'
   const [shuffle, setShuffle] = useState(false);
-  const [isVideoExpanded, setIsVideoExpanded] = useState(false);
+  // Music Rooms State
+  const [activeRoom, setActiveRoom] = useState(null);
+  const [roomParticipants, setRoomParticipants] = useState([]);
+  const [roomActivity, setRoomActivity] = useState([]);
+  const [roomCode, setRoomCode] = useState('');
+  const [joinRoomCode, setJoinRoomCode] = useState('');
+  const [newRoomName, setNewRoomName] = useState('');
+  const [roomVisibility, setRoomVisibility] = useState('public');
+  const [displayName, setDisplayName] = useState(() => {
+    return localStorage.getItem('listenup_display_name') || 'Listener-' + Math.floor(Math.random() * 9000 + 1000);
+  });
+  const [publicRooms, setPublicRooms] = useState([]);
+  const [roomError, setRoomError] = useState('');
+  const [roomCreated, setRoomCreated] = useState(false);
+  const [isHost, setIsHost] = useState(false);
+  const [copiedCode, setCopiedCode] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
+  const [pendingSongRequests, setPendingSongRequests] = useState([]);
+  const socketRef = useRef(null);
+
 
   const playerRef = useRef(null);
   const timerRef = useRef(null);
   const createPlaylistDialogRef = useRef(null);
   const isLoadingSongRef = useRef(false);
-  const stateRef = useRef({ currentSong, queue, repeat, isPlaying, shuffle });
+  const stateRef = useRef({ currentSong, queue, repeat, isPlaying, shuffle, activeRoom, isHost });
 
   // Sync state ref for YouTube event listeners
   useEffect(() => {
-    stateRef.current = { currentSong, queue, repeat, isPlaying, shuffle };
-  }, [currentSong, queue, repeat, isPlaying, shuffle]);
+    stateRef.current = { currentSong, queue, repeat, isPlaying, shuffle, activeRoom, isHost };
+  }, [currentSong, queue, repeat, isPlaying, shuffle, activeRoom, isHost]);
 
   // Load favorites, volume, playlists and fetch home categories on mount
   useEffect(() => {
@@ -96,7 +116,6 @@ export default function App() {
       };
     } else {
       initPlayer();
-    }
     }
 
     return () => {
@@ -146,13 +165,217 @@ export default function App() {
     localStorage.setItem('listenup_playlists', JSON.stringify(playlists));
     localStorage.setItem('listenup_queue', JSON.stringify(queue));
   }, [playlists, queue]);
+  // Socket.IO connection for Music Rooms
+  useEffect(() => {
+    const backendUrl = import.meta.env.VITE_API_URL || window.location.origin;
+    const socket = io(backendUrl, { transports: ['websocket', 'polling'] });
+    socketRef.current = socket;
+
+    socket.on('connected', (data) => {
+      console.log('Socket connected:', data.sid);
+    });
+
+    socket.on('room_created', (room) => {
+      setActiveRoom(room);
+      setRoomCode(room.code);
+      setRoomParticipants(room.participants || []);
+      setIsHost(true);
+      setRoomCreated(true);
+      setRoomError('');
+    });
+
+    socket.on('room_joined', (room) => {
+      setActiveRoom(room);
+      setRoomCode(room.code);
+      setRoomParticipants(room.participants || []);
+      setIsHost(false);
+      setRoomCreated(false);
+      setRoomError('');
+      // If host is playing a song, sync to it
+      if (room.currentSong) {
+        setCurrentSong(room.currentSong);
+        if (room.isPlaying && playerRef.current && playerRef.current.loadVideoById) {
+          playerRef.current.loadVideoById(room.currentSong.id, room.currentTime || 0);
+          setIsPlaying(true);
+        }
+      }
+    });
+
+    socket.on('room_update', (room) => {
+      setActiveRoom(room);
+      setRoomParticipants(room.participants || []);
+    });
+
+    socket.on('room_left', () => {
+      setActiveRoom(null);
+      setRoomCode('');
+      setRoomParticipants([]);
+      setRoomActivity([]);
+      setIsHost(false);
+      setRoomCreated(false);
+    });
+
+    socket.on('room_error', (data) => {
+      setRoomError(data.message);
+    });
+
+    socket.on('activity', (data) => {
+      setRoomActivity(prev => [...prev.slice(-49), data]);
+    });
+
+    socket.on('playback_update', (data) => {
+      // Listeners receive playback state from host
+      if (data.currentSong) {
+        const currentId = stateRef.current.currentSong?.id;
+        if (currentId !== data.currentSong.id) {
+          // New song — load it at the host's current time
+          setCurrentSong(data.currentSong);
+          if (playerRef.current) {
+            isLoadingSongRef.current = true;
+            if (data.isPlaying) {
+              playerRef.current.loadVideoById?.(data.currentSong.id, data.currentTime || 0);
+            } else {
+              playerRef.current.cueVideoById?.(data.currentSong.id, data.currentTime || 0);
+            }
+          }
+        } else if (Math.abs((playerRef.current?.getCurrentTime?.() || 0) - (data.currentTime || 0)) > 2) {
+          // Same song but time drifted — seek to sync
+          playerRef.current?.seekTo?.(data.currentTime, true);
+        }
+      }
+      // Force play/pause state to match the host
+      if (data.isPlaying) {
+        playerRef.current?.playVideo?.();
+        setIsPlaying(true);
+      } else {
+        playerRef.current?.pauseVideo?.();
+        setIsPlaying(false);
+      }
+    });
+
+    // Host receives song requests from listeners — show as notification
+    socket.on('song_requested', (data) => {
+      if (data.song) {
+        setPendingSongRequests(prev => [...prev, {
+          id: Date.now() + Math.random(),
+          song: data.song,
+          requestedBy: data.requestedBy || 'Someone'
+        }]);
+      }
+    });
+
+    // Host receives play/pause requests from listeners
+    socket.on('playback_requested', (data) => {
+      setIsPlaying(data.isPlaying);
+    });
+
+    return () => socket.disconnect();
+  }, []);
+
+  // Sync playback to room when host changes song or play state
+  useEffect(() => {
+    if (isHost && activeRoom && socketRef.current) {
+      socketRef.current.emit('sync_playback', {
+        currentSong,
+        isPlaying,
+        currentTime: playerRef.current?.getCurrentTime?.() || 0
+      });
+    }
+  }, [currentSong, isPlaying, isHost, activeRoom]);
+
+  // Periodic time sync from host (every 3 seconds) to keep listeners in lockstep
+  useEffect(() => {
+    if (!isHost || !activeRoom || !socketRef.current) return;
+    const interval = setInterval(() => {
+      const state = stateRef.current;
+      if (state.currentSong && state.isPlaying) {
+        socketRef.current?.emit('sync_playback', {
+          currentSong: state.currentSong,
+          isPlaying: state.isPlaying,
+          currentTime: playerRef.current?.getCurrentTime?.() || 0
+        });
+      }
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [isHost, activeRoom]);
+
+  // Fetch public rooms when entering the rooms tab
+  useEffect(() => {
+    if (activeTab === 'rooms' && !activeRoom) {
+      fetch(import.meta.env.VITE_API_URL + '/api/rooms').then(r => r.json()).then(data => setPublicRooms(data)).catch(() => {});
+    }
+  }, [activeTab, activeRoom]);
+
+  // Save display name
+  useEffect(() => {
+    localStorage.setItem('listenup_display_name', displayName);
+  }, [displayName]);
+
+  // Auto-join room from URL (e.g. /room/MZK-4839)
+  useEffect(() => {
+    const path = window.location.pathname;
+    const match = path.match(/^\/room\/([A-Z0-9-]+)$/i);
+    if (match && socketRef.current) {
+      const code = match[1].toUpperCase();
+      setActiveTab('rooms');
+      setJoinRoomCode(code);
+      // Wait a moment for the socket to be fully connected
+      const timer = setTimeout(() => {
+        socketRef.current?.emit('join_room_request', { roomCode: code, displayName });
+      }, 1000);
+      // Clean up URL
+      window.history.replaceState({}, '', '/');
+      return () => clearTimeout(timer);
+    }
+  }, []);
+
+  const handleCreateRoom = () => {
+    if (!newRoomName.trim()) return;
+    socketRef.current?.emit('create_room', {
+      roomName: newRoomName.trim(),
+      visibility: roomVisibility,
+      displayName
+    });
+  };
+
+  const handleJoinRoom = () => {
+    if (!joinRoomCode.trim()) return;
+    socketRef.current?.emit('join_room_request', {
+      roomCode: joinRoomCode.trim().toUpperCase(),
+      displayName
+    });
+  };
+
+  const handleLeaveRoom = () => {
+    socketRef.current?.emit('leave_room_request', { roomCode });
+  };
+
+  const copyToClipboard = (text, type) => {
+    navigator.clipboard.writeText(text);
+    if (type === 'code') { setCopiedCode(true); setTimeout(() => setCopiedCode(false), 2000); }
+    if (type === 'link') { setCopiedLink(true); setTimeout(() => setCopiedLink(false), 2000); }
+  };
+
+  const handleAcceptSongRequest = (request) => {
+    setCurrentSong(request.song);
+    setQueue(prev => {
+      if (prev.some(s => s.id === request.song.id)) return prev;
+      return [...prev, request.song];
+    });
+    setPendingSongRequests(prev => prev.filter(r => r.id !== request.id));
+  };
+
+  const handleDeclineSongRequest = (request) => {
+    setPendingSongRequests(prev => prev.filter(r => r.id !== request.id));
+  };
+
 
   async function fetchHomeData() {
     setHomeLoading(true);
     const categories = ['trending', 'bollywood', 'hollywood', 'lofi', 'pop', 'romantic', 'party'];
     try {
       const promises = categories.map(async (cat) => {
-        const res = await fetch(`/api/browse?category=${cat}`);
+        const res = await fetch(`${import.meta.env.VITE_API_URL || ''}/api/browse?category=${cat}`);
         if (!res.ok) throw new Error(`Failed to fetch ${cat}`);
         const data = await res.json();
         return { cat, data };
@@ -208,9 +431,15 @@ export default function App() {
   };
 
   const handlePlayerStateChange = (state) => {
+    // For non-host listeners in a room, only update the time display
+    // Play/pause state is controlled entirely by the host sync
+    const inRoomAsListener = stateRef.current.activeRoom && !stateRef.current.isHost;
+
     if (state === 1) { // PLAYING
       isLoadingSongRef.current = false;
-      setIsPlaying(true);
+      if (!inRoomAsListener) {
+        setIsPlaying(true);
+      }
       if (timerRef.current) clearInterval(timerRef.current);
       timerRef.current = setInterval(() => {
         if (playerRef.current && playerRef.current.getCurrentTime) {
@@ -221,10 +450,14 @@ export default function App() {
     } else if (state === 2) { // PAUSED
       // Ignore transient PAUSED events fired by YouTube while loading a new video
       if (isLoadingSongRef.current) return;
+      // If listener in room, don't set pause — host controls playback
+      if (inRoomAsListener) return;
       setIsPlaying(false);
       if (timerRef.current) clearInterval(timerRef.current);
     } else if (state === 0) { // ENDED
       isLoadingSongRef.current = false;
+      // If listener in room, let host handle next song
+      if (inRoomAsListener) return;
       setIsPlaying(false);
       if (timerRef.current) clearInterval(timerRef.current);
       
@@ -241,15 +474,40 @@ export default function App() {
 
   // Playback control effects
   useEffect(() => {
+    const inRoomAsListener = activeRoom && !isHost;
+    // If listener in room, do NOT auto-play here — playback_update socket event handles this
+    if (inRoomAsListener) return;
+
     if (currentSong && isPlayerReady && playerRef.current && playerRef.current.loadVideoById) {
       isLoadingSongRef.current = true;
       setCurrentTime(0);
       setDuration(0);
-      playerRef.current.loadVideoById(currentSong.id);
-      setIsPlaying(true);
+      
+      if (isHost && activeRoom) {
+        // Host in a room: cue the video (buffer it) and wait 2.5s so listeners can preload too
+        if (playerRef.current.cueVideoById) {
+          playerRef.current.cueVideoById(currentSong.id);
+        } else {
+          playerRef.current.loadVideoById(currentSong.id);
+          playerRef.current.pauseVideo?.();
+        }
+        setIsPlaying(false); // This syncs to listeners so they also pause
+        
+        // Start playing after buffering period
+        setTimeout(() => {
+          if (stateRef.current.currentSong?.id === currentSong.id) {
+            playerRef.current?.playVideo?.();
+            setIsPlaying(true);
+          }
+        }, 2500);
+      } else {
+        // Normal solo playback
+        playerRef.current.loadVideoById(currentSong.id);
+        setIsPlaying(true);
+      }
       addToQueueSilent(currentSong);
     }
-  }, [currentSong, isPlayerReady]);
+  }, [currentSong, isPlayerReady, activeRoom, isHost]);
 
   useEffect(() => {
     if (playerRef.current && playerRef.current.playVideo && playerRef.current.pauseVideo) {
@@ -270,6 +528,12 @@ export default function App() {
 
   // Queue Operations
   const playSong = (song) => {
+    // If in a room and NOT the host, send request to host instead of playing locally
+    const { activeRoom: currentRoom, isHost: currentIsHost } = stateRef.current;
+    if (currentRoom && !currentIsHost && socketRef.current) {
+      socketRef.current.emit('request_song', { song, displayName });
+      return;
+    }
     setCurrentSong(song);
     const index = queue.findIndex(s => s.id === song.id);
     if (index === -1) {
@@ -292,6 +556,9 @@ export default function App() {
   };
 
   const appendToQueue = (song) => {
+    const { activeRoom: currentRoom, isHost: currentIsHost } = stateRef.current;
+    if (currentRoom && !currentIsHost) return;
+
     setQueue(prev => {
       if (prev.some(s => s.id === song.id)) return prev;
       return [...prev, song];
@@ -299,6 +566,9 @@ export default function App() {
   };
 
   const removeFromQueue = (songId) => {
+    const { activeRoom: currentRoom, isHost: currentIsHost } = stateRef.current;
+    if (currentRoom && !currentIsHost) return;
+
     setQueue(prev => prev.filter(s => s.id !== songId));
     if (currentSong?.id === songId) {
       playNext();
@@ -306,6 +576,9 @@ export default function App() {
   };
 
   const clearQueue = () => {
+    const { activeRoom: currentRoom, isHost: currentIsHost } = stateRef.current;
+    if (currentRoom && !currentIsHost) return;
+    
     setQueue([]);
     setCurrentSong(null);
     setIsPlaying(false);
@@ -315,17 +588,27 @@ export default function App() {
   };
 
   const playNext = () => {
-    const { queue: currentQueue, currentSong: activeSong, repeat: currentRepeat } = stateRef.current;
+    const { queue: currentQueue, currentSong: activeSong, repeat: currentRepeat, activeRoom: currentRoom, isHost: currentIsHost } = stateRef.current;
     if (currentQueue.length === 0) return;
     
+    // Listeners should request to play next
+    if (currentRoom && !currentIsHost) {
+      // Find the next song they want to request
+      const currentIdx = currentQueue.findIndex(s => s.id === activeSong?.id);
+      if (currentIdx !== -1 && currentIdx < currentQueue.length - 1) {
+        playSong(currentQueue[currentIdx + 1]);
+      }
+      return;
+    }
+
     const currentIdx = currentQueue.findIndex(s => s.id === activeSong?.id);
     if (currentIdx === -1) {
-      setCurrentSong(currentQueue[0]);
+      playSong(currentQueue[0]);
     } else if (currentIdx < currentQueue.length - 1) {
-      setCurrentSong(currentQueue[currentIdx + 1]);
+      playSong(currentQueue[currentIdx + 1]);
     } else {
       if (currentRepeat === 'all') {
-        setCurrentSong(currentQueue[0]);
+        playSong(currentQueue[0]);
       } else {
         setIsPlaying(false);
       }
@@ -333,23 +616,35 @@ export default function App() {
   };
 
   const playPrevious = () => {
-    const { queue: currentQueue, currentSong: activeSong, repeat: currentRepeat } = stateRef.current;
+    const { queue: currentQueue, currentSong: activeSong, activeRoom: currentRoom, isHost: currentIsHost } = stateRef.current;
     if (currentQueue.length === 0) return;
+
+    if (currentRoom && !currentIsHost) {
+      const currentIdx = currentQueue.findIndex(s => s.id === activeSong?.id);
+      if (currentIdx > 0) {
+        playSong(currentQueue[currentIdx - 1]);
+      }
+      return;
+    }
+
+    if (playerRef.current && playerRef.current.getCurrentTime && playerRef.current.getCurrentTime() > 3) {
+      playerRef.current.seekTo(0);
+      setCurrentTime(0);
+      return;
+    }
 
     const currentIdx = currentQueue.findIndex(s => s.id === activeSong?.id);
     if (currentIdx > 0) {
-      setCurrentSong(currentQueue[currentIdx - 1]);
-    } else if (currentIdx === 0 && currentRepeat === 'all') {
-      setCurrentSong(currentQueue[currentQueue.length - 1]);
-    } else {
-      if (playerRef.current && playerRef.current.seekTo) {
-        playerRef.current.seekTo(0);
-        setCurrentTime(0);
-      }
+      playSong(currentQueue[currentIdx - 1]);
+    } else if (currentIdx === 0 && repeat === 'all') {
+      playSong(currentQueue[currentQueue.length - 1]);
     }
   };
 
   const handleShuffleToggle = () => {
+    const { activeRoom: currentRoom, isHost: currentIsHost } = stateRef.current;
+    if (currentRoom && !currentIsHost) return;
+
     if (!shuffle) {
       setOriginalQueue([...queue]);
       if (queue.length > 1) {
@@ -372,6 +667,9 @@ export default function App() {
   };
 
   const toggleRepeat = () => {
+    const { activeRoom: currentRoom, isHost: currentIsHost } = stateRef.current;
+    if (currentRoom && !currentIsHost) return;
+
     setRepeat(prev => {
       if (prev === 'off') return 'all';
       if (prev === 'all') return 'one';
@@ -428,6 +726,14 @@ export default function App() {
 
   const playPlaylist = (playlist) => {
     if (!playlist || playlist.songs.length === 0) return;
+    const { activeRoom: currentRoom, isHost: currentIsHost } = stateRef.current;
+    
+    // If listener in room, just request the first song (or we could block it)
+    if (currentRoom && !currentIsHost && socketRef.current) {
+      socketRef.current.emit('request_song', { song: playlist.songs[0], displayName });
+      return;
+    }
+
     setQueue(playlist.songs);
     if (shuffle) {
       setOriginalQueue(playlist.songs);
@@ -455,14 +761,14 @@ export default function App() {
     closeCreatePlaylistModal();
   };
 
-  // Search Action
+
   const handleSearchSubmit = async (e) => {
     if (e) e.preventDefault();
     if (!searchQuery.trim()) return;
 
     setSearchLoading(true);
     try {
-      const res = await fetch(`/api/search?q=${encodeURIComponent(searchQuery)}`);
+      const res = await fetch(`${import.meta.env.VITE_API_URL || ''}/api/search?q=${encodeURIComponent(searchQuery)}`);
       const data = await res.json();
       if (Array.isArray(data)) {
         setSearchResults(data);
@@ -479,10 +785,12 @@ export default function App() {
 
   // Seek bar action
   const handleSeekChange = (e) => {
-    const seekTime = parseFloat(e.target.value);
-    setCurrentTime(seekTime);
+    const { activeRoom: currentRoom, isHost: currentIsHost } = stateRef.current;
+    if (currentRoom && !currentIsHost) return; // Listeners cannot seek
+    
+    const newTime = parseFloat(e.target.value);
     if (playerRef.current && playerRef.current.seekTo) {
-      playerRef.current.seekTo(seekTime);
+      playerRef.current.seekTo(newTime, true);
     }
   };
 
@@ -497,35 +805,15 @@ export default function App() {
   // Dropdown helper function for playlists
   const renderPlaylistDropdown = (song, direction = 'down') => {
     const isOpen = activeDropdownSong?.id === song.id;
-    const isFav = favorites.some(s => s.id === song.id);
     return (
-      <div className="flex items-center gap-2 relative">
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              toggleFavorite(song);
-            }}
-            className="p-2 rounded-lg text-slate-400 hover:text-pink-500 hover:bg-white/5 transition-colors"
-            title={isFav ? "Remove from Favorites" : "Add to Favorites"}
-          >
-            {isFav ? (
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5 text-pink-500 animate-fade-in">
-                <path d="M11.645 20.91l-.007-.003-.022-.012a15.247 15.247 0 01-.383-.218 25.18 25.18 0 01-4.244-3.17C4.688 15.36 2.25 12.174 2.25 8.25 2.25 5.322 4.714 3 7.688 3A5.5 5.5 0 0112 5.052 5.5 5.5 0 0116.313 3c2.973 0 5.437 2.322 5.437 5.25 0 3.925-2.438 7.111-4.739 9.256a25.175 25.175 0 01-4.244 3.17 15.247 15.247 0 01-.383.219l-.022.012-.007.004-.003.001a.752.752 0 01-.704 0l-.003-.001z" />
-              </svg>
-            ) : (
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-5 h-5">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12z" />
-              </svg>
-            )}
-          </button>
-        
-          <>
+      <div className="relative">
+
             <button
               onClick={(e) => {
                 e.stopPropagation();
                 setActiveDropdownSong(isOpen ? null : song);
               }}
-              className="playlist-dropdown-trigger p-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-white/5 transition-colors animate-fade-in"
+              className="playlist-dropdown-trigger p-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-[#222222] transition-colors animate-fade-in"
               title="Add to Playlist"
             >
               <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-5 h-5">
@@ -534,10 +822,10 @@ export default function App() {
             </button>
             
             {isOpen && (
-              <div className={`playlist-dropdown-menu absolute right-0 w-48 bg-[#141121] border border-slate-800/80 rounded-xl shadow-2xl z-50 py-1.5 text-left ${
+              <div className={`playlist-dropdown-menu absolute right-0 w-48 bg-[#141121] border border-slate-800 rounded-xl shadow-2xl z-50 py-1.5 text-left ${
                 direction === 'up' ? 'bottom-full mb-1.5' : 'top-full mt-1.5'
               }`}>
-                <div className="px-3 py-1 text-[10px] text-slate-500 uppercase tracking-widest font-bold border-b border-slate-800/50 mb-1">
+                <div className="px-3 py-1 text-[10px] text-slate-500 uppercase tracking-widest font-bold border-b border-slate-800 mb-1">
                   Add to Playlist
                 </div>
                 {playlists.length === 0 ? (
@@ -551,7 +839,7 @@ export default function App() {
                           e.stopPropagation();
                           addSongToPlaylist(pl.id, song);
                         }}
-                        className="w-full text-left px-3 py-1.5 text-xs text-slate-300 hover:text-white hover:bg-purple-600/20 transition-colors truncate"
+                        className="w-full text-left px-3 py-1.5 text-xs text-slate-300 hover:text-white hover:bg-[#0a2e36] transition-colors truncate"
                       >
                         {pl.name}
                       </button>
@@ -563,8 +851,18 @@ export default function App() {
                     e.stopPropagation();
                     setActiveDropdownSong(null);
                   }}
-                  className="w-full text-left px-3 py-2 text-xs text-slate-500 hover:text-slate-300 transition-colors border-t border-slate-800/50 mt-1"
+                  className="w-full text-left px-3 py-2 text-xs text-slate-500 hover:text-slate-300 transition-colors border-t border-slate-800 mt-1"
                 >
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    appendToQueue(song);
+                    setActiveDropdownSong(null);
+                  }}
+                  className="w-full text-left px-3 py-2 text-xs text-slate-300 hover:text-white hover:bg-[#222222] transition-colors border-t border-slate-800 mt-1"
+                >
+                  Add to Queue
+                </button>
                   Cancel
                 </button>
               </div>
@@ -574,23 +872,26 @@ export default function App() {
   };
 
   return (
-    <div className="flex h-screen w-screen bg-[#0b0813] text-slate-200 overflow-hidden relative font-sans">
+    <div className="flex h-screen w-screen bg-black text-slate-200 overflow-hidden relative font-sans">
       
-      {/* Background Neon Gradients */}
-      <div className="absolute top-[-20%] left-[-10%] w-[50%] h-[50%] bg-purple-900/10 rounded-full blur-[120px] pointer-events-none"></div>
-      <div className="absolute bottom-[-10%] right-[-10%] w-[60%] h-[60%] bg-indigo-900/10 rounded-full blur-[140px] pointer-events-none"></div>
+      
+      <div className="absolute bottom-[-10%] right-[-10%] w-[60%] h-[60%] bg-cyan-900 rounded-full blur-[140px] pointer-events-none"></div>
+
+      {/* Mobile Menu Backdrop */}
+      {isMobileMenuOpen && (
+        <div 
+          className="fixed inset-0 bg-black/60 z-30 md:hidden backdrop-blur-sm"
+          onClick={() => setIsMobileMenuOpen(false)}
+        />
+      )}
 
       {/* Left Sidebar */}
-      <aside className="w-64 glass-panel border-r border-slate-800/40 flex flex-col z-20">
+      <aside className={`fixed md:relative w-64 h-full glass-panel border-r border-slate-800 flex flex-col z-40 transition-transform duration-300 ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
         {/* App Branding */}
         <div className="p-6 flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-purple-600 to-pink-500 flex items-center justify-center shadow-lg shadow-purple-600/30">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor" className="w-6 h-6 text-white">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9 9l10.5-3m0 0v13.5m0-13.5L9 12.5m0 0v6.75m0-6.75L3 15.75M9 19.5a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0zm10.5-3a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0z" />
-            </svg>
-          </div>
+          <img src="/logo.png" alt="ListenUp Logo" className="h-10 w-auto object-contain drop-shadow-md" />
           <div>
-            <h1 className="text-xl font-extrabold text-white tracking-wider bg-gradient-to-r from-purple-400 via-pink-400 to-indigo-400 bg-clip-text text-transparent">
+            <h1 className="text-xl font-extrabold text-white tracking-wider bg-gradient-to-r from-cyan-400 via-pink-400 to-cyan-400 bg-clip-text text-transparent">
               ListenUp
             </h1>
             <p className="text-[10px] text-slate-500 uppercase tracking-widest font-bold">Web Player</p>
@@ -602,8 +903,8 @@ export default function App() {
             onClick={() => setActiveTab('home')}
             className={`w-full flex items-center gap-4 px-4 py-3 rounded-xl transition-all duration-200 ${
               activeTab === 'home'
-                ? 'bg-gradient-to-r from-purple-900/30 to-indigo-950/20 text-purple-400 border border-purple-800/30 shadow-md shadow-purple-900/10'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-white/3'
+                ? 'bg-cyan-950 hover:bg-cyan-900 text-cyan-400 border border-cyan-800 shadow-md shadow-cyan-900/10'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-[#1a1a1a]'
             }`}
           >
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor" className="w-5 h-5">
@@ -616,8 +917,8 @@ export default function App() {
             onClick={() => setActiveTab('search')}
             className={`w-full flex items-center gap-4 px-4 py-3 rounded-xl transition-all duration-200 ${
               activeTab === 'search'
-                ? 'bg-gradient-to-r from-purple-900/30 to-indigo-950/20 text-purple-400 border border-purple-800/30 shadow-md shadow-purple-900/10'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-white/3'
+                ? 'bg-cyan-950 hover:bg-cyan-900 text-cyan-400 border border-cyan-800 shadow-md shadow-cyan-900/10'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-[#1a1a1a]'
             }`}
           >
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-5 h-5">
@@ -630,8 +931,8 @@ export default function App() {
             onClick={() => setActiveTab('favorites')}
             className={`w-full flex items-center gap-4 px-4 py-3 rounded-xl transition-all duration-200 ${
               activeTab === 'favorites'
-                ? 'bg-gradient-to-r from-purple-900/30 to-indigo-950/20 text-purple-400 border border-purple-800/30 shadow-md shadow-purple-900/10'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-white/3'
+                ? 'bg-cyan-950 hover:bg-cyan-900 text-cyan-400 border border-cyan-800 shadow-md shadow-cyan-900/10'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-[#1a1a1a]'
             }`}
           >
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-5 h-5">
@@ -639,7 +940,7 @@ export default function App() {
             </svg>
             <span className="font-semibold text-sm">Favorites</span>
             {favorites.length > 0 && (
-              <span className="ml-auto bg-purple-500/20 text-purple-400 text-xs px-2 py-0.5 rounded-full font-bold border border-purple-500/30">
+              <span className="ml-auto bg-[#0a2e36] text-cyan-400 text-xs px-2 py-0.5 rounded-full font-bold border border-[#0d3f4a]">
                 {favorites.length}
               </span>
             )}
@@ -652,8 +953,8 @@ export default function App() {
             }}
             className={`w-full flex items-center gap-4 px-4 py-3 rounded-xl transition-all duration-200 ${
               activeTab === 'playlists'
-                ? 'bg-gradient-to-r from-purple-900/30 to-indigo-950/20 text-purple-400 border border-purple-800/30 shadow-md shadow-purple-900/10'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-white/3'
+                ? 'bg-cyan-950 hover:bg-cyan-900 text-cyan-400 border border-cyan-800 shadow-md shadow-cyan-900/10'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-[#1a1a1a]'
             }`}
           >
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor" className="w-5 h-5">
@@ -661,8 +962,28 @@ export default function App() {
             </svg>
             <span className="font-semibold text-sm">Playlists</span>
             {playlists.length > 0 && (
-              <span className="ml-auto bg-purple-500/20 text-purple-400 text-xs px-2 py-0.5 rounded-full font-bold border border-purple-500/30">
+              <span className="ml-auto bg-[#0a2e36] text-cyan-400 text-xs px-2 py-0.5 rounded-full font-bold border border-[#0d3f4a]">
                 {playlists.length}
+              </span>
+            )}
+          </button>
+
+
+          <button
+            onClick={() => setActiveTab('rooms')}
+            className={`w-full flex items-center gap-4 px-4 py-3 rounded-xl transition-all duration-200 ${
+              activeTab === 'rooms'
+                ? 'bg-cyan-950 hover:bg-cyan-900 text-cyan-400 border border-cyan-800 shadow-md shadow-cyan-900/10'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-[#1a1a1a]'
+            }`}
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-5 h-5">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M18 18.72a9.094 9.094 0 003.741-.479 3 3 0 00-4.682-2.72m.94 3.198l.001.031c0 .225-.012.447-.037.666A11.944 11.944 0 0112 21c-2.17 0-4.207-.576-5.963-1.584A6.062 6.062 0 016 18.719m12 0a5.971 5.971 0 00-.941-3.197m0 0A5.995 5.995 0 0012 12.75a5.995 5.995 0 00-5.058 2.772m0 0a3 3 0 00-4.681 2.72 8.986 8.986 0 003.74.477m.94-3.197a5.971 5.971 0 00-.94 3.197M15 6.75a3 3 0 11-6 0 3 3 0 016 0zm6 3a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0zm-13.5 0a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0z" />
+            </svg>
+            <span className="font-semibold text-sm">Music Rooms</span>
+            {activeRoom && (
+              <span className="ml-auto bg-green-950 text-green-400 text-xs px-2 py-0.5 rounded-full font-bold border border-green-900">
+                Live
               </span>
             )}
           </button>
@@ -671,8 +992,8 @@ export default function App() {
             onClick={() => setActiveTab('queue')}
             className={`w-full flex items-center gap-4 px-4 py-3 rounded-xl transition-all duration-200 ${
               activeTab === 'queue'
-                ? 'bg-gradient-to-r from-purple-900/30 to-indigo-950/20 text-purple-400 border border-purple-800/30 shadow-md shadow-purple-900/10'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-white/3'
+                ? 'bg-cyan-950 hover:bg-cyan-900 text-cyan-400 border border-cyan-800 shadow-md shadow-cyan-900/10'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-[#1a1a1a]'
             }`}
           >
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-5 h-5">
@@ -680,65 +1001,83 @@ export default function App() {
             </svg>
             <span className="font-semibold text-sm">Play Queue</span>
             {queue.length > 0 && (
-              <span className="ml-auto bg-indigo-500/20 text-indigo-400 text-xs px-2 py-0.5 rounded-full font-bold border border-indigo-500/30">
+              <span className="ml-auto bg-[#0a2e36] text-cyan-400 text-xs px-2 py-0.5 rounded-full font-bold border border-[#0d3f4a]">
                 {queue.length}
               </span>
             )}
           </button>
         </nav>
 
-        {/* Small Compliant YouTube Video Container in Sidebar Bottom */}
-        <div className="p-4 border-t border-slate-800/30">
-          <div className="text-[10px] text-slate-500 uppercase tracking-widest font-semibold mb-2">
-            YT Stream Feed
+        {/* Sidebar Bottom Footer (YouTube + Credits) */}
+        <div className="p-4 border-t border-slate-800 flex flex-col gap-5 mt-auto">
+          {/* Hidden YouTube Video Container (Required by API to be in DOM) */}
+          <div className="absolute top-[-9999px] left-[-9999px] opacity-0 pointer-events-none w-[1px] h-[1px] overflow-hidden">
+            <div id="yt-player-iframe"></div>
           </div>
-          <div 
-            className={`relative rounded-xl overflow-hidden bg-black/60 border border-slate-800/40 transition-all duration-300 ${
-              isVideoExpanded ? 'aspect-video w-full' : 'w-24 h-[54px]'
-            }`}
-          >
-            <div id="yt-player-iframe" className="w-full h-full"></div>
-            {/* Overlay if not expanded to let users expand it */}
-            {!isVideoExpanded && (
-              <button 
-                onClick={() => setIsVideoExpanded(true)}
-                className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity"
-                title="Expand video feed"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-4 h-4 text-white">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75v4.5m0-4.5h-4.5m4.5 0L15 9m5.25 11.25v-4.5m0 4.5h-4.5m4.5 0L15 15" />
+          
+          {/* Creator Credits */}
+          <div>
+            <div className="text-xs text-slate-400 font-medium">Made by Prateek</div>
+            <div className="flex items-center gap-3 mt-1.5">
+              <a href="https://www.linkedin.com/in/prateek-jaiswal-44b580377/" target="_blank" rel="noopener noreferrer" className="text-slate-500 hover:text-[#0077b5] transition-colors" title="LinkedIn">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4">
+                  <path d="M19 0h-14c-2.761 0-5 2.239-5 5v14c0 2.761 2.239 5 5 5h14c2.762 0 5-2.239 5-5v-14c0-2.761-2.238-5-5-5zm-11 19h-3v-11h3v11zm-1.5-12.268c-.966 0-1.75-.79-1.75-1.764s.784-1.764 1.75-1.764 1.75.79 1.75 1.764-.783 1.764-1.75 1.764zm13.5 12.268h-3v-5.604c0-3.368-4-3.113-4 0v5.604h-3v-11h3v1.765c1.396-2.586 7-2.777 7 2.476v6.759z"/>
                 </svg>
-              </button>
-            )}
-            {/* Collapse toggle if expanded */}
-            {isVideoExpanded && (
-              <button 
-                onClick={() => setIsVideoExpanded(false)}
-                className="absolute top-2 right-2 p-1 rounded bg-black/80 hover:bg-black text-white transition-colors"
-                title="Collapse video feed"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-3.5 h-3.5">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 9V4.5M9 9H4.5M9 9L3 3m12 6V4.5m0 4.5h4.5M15 9l6-6M9 15v4.5M9 15H4.5M9 15l-6 6m12-6v4.5m0-4.5h4.5m-4.5 0l6 6" />
+              </a>
+              <a href="https://github.com/prateek977" target="_blank" rel="noopener noreferrer" className="text-slate-500 hover:text-white transition-colors" title="GitHub">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4">
+                  <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
                 </svg>
-              </button>
-            )}
+              </a>
+            </div>
           </div>
         </div>
       </aside>
 
       {/* Main Dashboard Panels */}
-      <main className="flex-1 flex flex-col h-full overflow-y-auto pb-28 px-8 py-6 z-10">
+      <main className="flex-1 flex flex-col h-full overflow-y-auto pb-32 md:pb-28 px-4 md:px-8 py-4 md:py-6 z-10">
         
+        {/* Mobile Header */}
+        <div className="md:hidden flex items-center justify-between mb-6">
+          <div className="flex items-center gap-2">
+            <img src="/logo.png" alt="ListenUp Logo" className="h-6 w-auto object-contain drop-shadow-md" />
+            <h1 className="text-lg font-extrabold text-white tracking-wider bg-gradient-to-r from-cyan-400 via-pink-400 to-cyan-400 bg-clip-text text-transparent">
+              ListenUp
+            </h1>
+          </div>
+          
+          <div className="flex items-center gap-2">
+            <button 
+              onClick={() => setActiveTab('search')}
+              className="p-2 text-slate-300 hover:text-white focus:outline-none"
+              title="Search"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor" className="w-5 h-5">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+              </svg>
+            </button>
+            <button 
+              onClick={() => setIsMobileMenuOpen(true)}
+              className="p-2 -mr-2 text-slate-300 hover:text-white focus:outline-none"
+              title="Menu"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-6 h-6">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
+              </svg>
+            </button>
+          </div>
+        </div>
+
         {/* Active View: HOME */}
         {activeTab === 'home' && (
           <div className="flex flex-col gap-8 max-w-6xl mx-auto w-full">
             {/* Header / Hero Section */}
-            <div className="relative rounded-3xl overflow-hidden bg-gradient-to-r from-purple-950/40 via-indigo-950/20 to-transparent p-8 border border-purple-900/10 shadow-2xl">
-              <div className="absolute top-0 right-0 w-[40%] h-full bg-gradient-to-l from-purple-500/5 to-transparent blur-3xl pointer-events-none"></div>
-              <span className="text-[10px] bg-purple-500/25 text-purple-300 border border-purple-500/30 px-3 py-1 rounded-full font-bold uppercase tracking-wider">
+            <div className="relative rounded-3xl overflow-hidden bg-cyan-950 p-5 md:p-8 border border-cyan-900/10 shadow-2xl">
+              <div className="absolute top-0 right-0 w-[40%] h-full bg-gradient-to-l from-cyan-500/5 to-transparent blur-3xl pointer-events-none"></div>
+              <span className="text-[10px] bg-[#0a2e36] text-purple-300 border border-[#0d3f4a] px-3 py-1 rounded-full font-bold uppercase tracking-wider">
                 Welcome
               </span>
-              <h2 className="text-4xl font-black text-white mt-4 tracking-tight leading-none bg-gradient-to-r from-white via-slate-200 to-slate-400 bg-clip-text text-transparent">
+              <h2 className="text-3xl md:text-4xl font-black text-white mt-4 tracking-tight leading-none bg-gradient-to-r from-white via-slate-200 to-slate-400 bg-clip-text text-transparent">
                 Your Sound, Reimagined
               </h2>
               <p className="text-slate-400 text-sm mt-2 max-w-md">
@@ -751,10 +1090,10 @@ export default function App() {
               <div className="space-y-8">
                 {['🔥 Top Trending', '🇮🇳 Bollywood Hits', '🇬🇧 Hollywood Pop'].map((title) => (
                   <div key={title} className="space-y-4">
-                    <div className="h-6 w-40 bg-slate-800/40 animate-pulse rounded-md"></div>
+                    <div className="h-6 w-40 bg-slate-800 animate-pulse rounded-md"></div>
                     <div className="flex gap-4 overflow-x-hidden">
                       {[1, 2, 3, 4, 5].map((i) => (
-                        <div key={i} className="w-40 h-56 bg-slate-900/30 border border-slate-800/20 animate-pulse rounded-2xl flex-shrink-0"></div>
+                        <div key={i} className="w-40 h-56 bg-slate-900 border border-slate-800 animate-pulse rounded-2xl flex-shrink-0"></div>
                       ))}
                     </div>
                   </div>
@@ -781,18 +1120,22 @@ export default function App() {
                         <h3 className="text-xl font-extrabold text-white tracking-tight">{friendlyNames[key] || key}</h3>
                       </div>
                       
-                      <div className="flex overflow-x-auto gap-4 pb-4 scroll-smooth scrollbar-thin scrollbar-thumb-white/10 hover:scrollbar-thumb-white/20">
-                        {songs.map((song) => (
+                      <div className="relative group/scroll">
+                        <div 
+                          id={`scroll-${key}`}
+                          className="flex overflow-x-auto gap-4 pb-4 scroll-smooth scrollbar-thin scrollbar-thumb-white/10 hover:scrollbar-thumb-white/20 hide-scrollbar"
+                        >
+                          {songs.map((song) => (
                           <div 
                             key={song.id} 
-                            className="w-40 flex-shrink-0 relative group p-3 rounded-2xl glass-card border border-white/5 bg-white/2 hover:bg-white/5 transition-all flex flex-col"
+                            className="w-40 flex-shrink-0 relative group p-3 rounded-2xl glass-card border border-[#222222] bg-[#141414] hover:bg-[#222222] transition-all flex flex-col"
                           >
-                            <div className="relative aspect-square w-full rounded-xl overflow-hidden bg-slate-900 border border-slate-800/50">
+                            <div className="relative aspect-square w-full rounded-xl overflow-hidden bg-slate-900 border border-slate-800">
                               <img src={song.thumbnailUrl} alt={song.title} className="w-full h-full object-cover" />
-                              <div className="absolute inset-0 bg-black/60 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                              <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                                 <button
                                   onClick={() => playSong(song)}
-                                  className="w-11 h-11 rounded-full bg-purple-600 text-white flex items-center justify-center shadow-lg transform scale-90 group-hover:scale-100 hover:bg-purple-500 active:scale-95 transition-all"
+                                  className="w-11 h-11 rounded-full bg-cyan-600 text-white flex items-center justify-center shadow-lg transform scale-90 group-hover:scale-100 hover:bg-cyan-500 active:scale-95 transition-all"
                                   title="Play"
                                 >
                                   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6 translate-x-0.5">
@@ -803,7 +1146,7 @@ export default function App() {
                             </div>
                             
                             <div className="mt-3 flex-1 min-w-0">
-                              <h4 className="text-xs font-bold text-white truncate group-hover:text-purple-400 transition-colors" title={song.title}>
+                              <h4 className="text-xs font-bold text-white truncate group-hover:text-cyan-400 transition-colors" title={song.title}>
                                 {song.title}
                               </h4>
                               <p className="text-[10px] text-slate-400 truncate mt-0.5" title={song.artist}>
@@ -811,10 +1154,10 @@ export default function App() {
                               </p>
                             </div>
 
-                            <div className="flex items-center justify-between mt-2.5 pt-2 border-t border-white/5">
+                            <div className="flex items-center justify-end gap-1 mt-2.5 pt-2 border-t border-[#222222]">
                               <button
                                 onClick={() => toggleFavorite(song)}
-                                className={`p-1 rounded hover:bg-white/5 transition-colors ${
+                                className={`p-1 rounded hover:bg-[#222222] transition-colors ${
                                   favorites.some(s => s.id === song.id) ? 'text-pink-500' : 'text-slate-500 hover:text-slate-300'
                                 }`}
                               >
@@ -823,22 +1166,26 @@ export default function App() {
                                 </svg>
                               </button>
 
-                              <div className="flex items-center gap-0.5">
-                                <button
-                                  onClick={() => appendToQueue(song)}
-                                  className="p-1.5 rounded text-slate-500 hover:text-slate-300 hover:bg-white/5 transition-colors"
-                                  title="Add to Queue"
-                                >
-                                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor" className="w-3.5 h-3.5">
-                                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-                                  </svg>
-                                </button>
-                                
-                                {renderPlaylistDropdown(song, 'up')}
-                              </div>
+                              {renderPlaylistDropdown(song, 'up')}
                             </div>
                           </div>
                         ))}
+                      </div>
+                        
+                        {/* Right scroll button */}
+                        <button 
+                          onClick={(e) => {
+                            e.preventDefault();
+                            const el = document.getElementById(`scroll-${key}`);
+                            if (el) el.scrollBy({ left: 300, behavior: 'smooth' });
+                          }}
+                          className="absolute -right-4 top-1/2 -translate-y-1/2 z-10 p-2 rounded-full bg-slate-900/80 border border-slate-700 text-white shadow-xl opacity-0 group-hover/scroll:opacity-100 transition-opacity hover:bg-slate-800"
+                          title="Scroll Right"
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor" className="w-5 h-5">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+                          </svg>
+                        </button>
                       </div>
                     </div>
                   );
@@ -852,7 +1199,7 @@ export default function App() {
         {activeTab === 'search' && (
           <div className="flex flex-col gap-6 max-w-5xl mx-auto w-full">
             <div>
-              <h2 className="text-3xl font-extrabold text-white text-glow-purple">Discover Music</h2>
+              <h2 className="text-3xl font-extrabold text-white text-glow-cyan">Discover Music</h2>
               <p className="text-slate-400 text-sm mt-1">Search, play, and cache songs directly from the cloud.</p>
             </div>
 
@@ -872,7 +1219,7 @@ export default function App() {
               <button
                 type="submit"
                 disabled={searchLoading}
-                className="bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-semibold px-8 rounded-2xl shadow-lg shadow-purple-600/20 active:scale-[0.98] transition-all disabled:opacity-50"
+                className="bg-cyan-600 hover:bg-cyan-500 text-white font-semibold px-8 rounded-2xl shadow-lg shadow-cyan-600/20 active:scale-[0.98] transition-all disabled:opacity-50"
               >
                 {searchLoading ? 'Searching...' : 'Search'}
               </button>
@@ -885,11 +1232,11 @@ export default function App() {
               
               {searchLoading ? (
                 <div className="flex flex-col items-center justify-center py-20 gap-3">
-                  <div className="w-10 h-10 border-4 border-purple-500 border-t-transparent rounded-full animate-spin"></div>
+                  <div className="w-10 h-10 border-4 border-cyan-500 border-t-transparent rounded-full animate-spin"></div>
                   <p className="text-slate-400 text-sm">Parsing YouTube stream feeds...</p>
                 </div>
               ) : searchResults.length === 0 ? (
-                <div className="text-center py-20 bg-white/2 rounded-2xl border border-slate-800/20">
+                <div className="text-center py-20 bg-[#141414] rounded-2xl border border-slate-800">
                   <p className="text-slate-400 text-sm">Enter a search query to search millions of songs instantly.</p>
                 </div>
               ) : (
@@ -898,14 +1245,14 @@ export default function App() {
                     <div 
                       key={song.id} 
                       className={`glass-card p-3 rounded-2xl flex items-center gap-4 group ${
-                        currentSong?.id === song.id ? 'border-purple-500/30 bg-purple-950/10' : ''
+                        currentSong?.id === song.id ? 'border-[#0d3f4a] bg-cyan-950' : ''
                       }`}
                     >
-                      <div className="w-14 h-14 rounded-xl overflow-hidden relative flex-shrink-0 bg-slate-900 border border-slate-800/50">
+                      <div className="w-14 h-14 rounded-xl overflow-hidden relative flex-shrink-0 bg-slate-900 border border-slate-800">
                         <img src={song.thumbnailUrl} alt={song.title} className="w-full h-full object-cover" />
                         <button 
                           onClick={() => playSong(song)}
-                          className="absolute inset-0 bg-black/60 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                          className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
                         >
                           <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24" className="w-6 h-6 text-white">
                             <path d="M8 5v14l11-7z" />
@@ -914,7 +1261,7 @@ export default function App() {
                       </div>
 
                       <div className="flex-1 min-w-0">
-                        <h4 className="text-sm font-semibold text-white truncate group-hover:text-purple-400 transition-colors">
+                        <h4 className="text-sm font-semibold text-white truncate group-hover:text-cyan-400 transition-colors">
                           {song.title}
                         </h4>
                         <p className="text-xs text-slate-400 truncate mt-0.5">{song.artist}</p>
@@ -924,7 +1271,7 @@ export default function App() {
                       <div className="flex items-center gap-1.5">
                         <button
                           onClick={() => toggleFavorite(song)}
-                          className={`p-2 rounded-lg hover:bg-white/5 transition-colors ${
+                          className={`p-2 rounded-lg hover:bg-[#222222] transition-colors ${
                             favorites.some(s => s.id === song.id) ? 'text-pink-500' : 'text-slate-400 hover:text-slate-200'
                           }`}
                           title={favorites.some(s => s.id === song.id) ? 'Remove from Favorites' : 'Add to Favorites'}
@@ -934,16 +1281,6 @@ export default function App() {
                           </svg>
                         </button>
 
-                        <button
-                          onClick={() => appendToQueue(song)}
-                          className="p-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-white/5 transition-colors"
-                          title="Add to Queue"
-                        >
-                          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-5 h-5">
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-                          </svg>
-                        </button>
-                        
                         {renderPlaylistDropdown(song, 'down')}
                       </div>
                     </div>
@@ -958,12 +1295,12 @@ export default function App() {
         {activeTab === 'favorites' && (
           <div className="flex flex-col gap-6 max-w-5xl mx-auto w-full">
             <div>
-              <h2 className="text-3xl font-extrabold text-white text-glow-purple">Your Favorites</h2>
+              <h2 className="text-3xl font-extrabold text-white text-glow-cyan">Your Favorites</h2>
               <p className="text-slate-400 text-sm mt-1">Tracks saved in your local browser library.</p>
             </div>
 
             {favorites.length === 0 ? (
-              <div className="text-center py-20 bg-white/2 rounded-2xl border border-slate-800/20">
+              <div className="text-center py-20 bg-[#141414] rounded-2xl border border-slate-800">
                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="w-12 h-12 text-slate-500 mx-auto mb-3">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12z" />
                 </svg>
@@ -976,14 +1313,14 @@ export default function App() {
                   <div 
                     key={song.id} 
                     className={`glass-card p-3 rounded-2xl flex items-center gap-4 group ${
-                      currentSong?.id === song.id ? 'border-purple-500/30 bg-purple-950/10' : ''
+                      currentSong?.id === song.id ? 'border-[#0d3f4a] bg-cyan-950' : ''
                     }`}
                   >
-                    <div className="w-14 h-14 rounded-xl overflow-hidden relative flex-shrink-0 bg-slate-900 border border-slate-800/50">
+                    <div className="w-14 h-14 rounded-xl overflow-hidden relative flex-shrink-0 bg-slate-900 border border-slate-800">
                       <img src={song.thumbnailUrl} alt={song.title} className="w-full h-full object-cover" />
                       <button 
                         onClick={() => playSong(song)}
-                        className="absolute inset-0 bg-black/60 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                        className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
                       >
                         <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24" className="w-6 h-6 text-white">
                           <path d="M8 5v14l11-7z" />
@@ -992,7 +1329,7 @@ export default function App() {
                     </div>
 
                     <div className="flex-1 min-w-0">
-                      <h4 className="text-sm font-semibold text-white truncate group-hover:text-purple-400 transition-colors">
+                      <h4 className="text-sm font-semibold text-white truncate group-hover:text-cyan-400 transition-colors">
                         {song.title}
                       </h4>
                       <p className="text-xs text-slate-400 truncate mt-0.5">{song.artist}</p>
@@ -1002,7 +1339,7 @@ export default function App() {
                     <div className="flex items-center gap-1.5">
                       <button
                         onClick={() => toggleFavorite(song)}
-                        className="p-2 rounded-lg text-pink-500 hover:bg-white/5 transition-colors"
+                        className="p-2 rounded-lg text-pink-500 hover:bg-[#222222] transition-colors"
                         title="Remove from Favorites"
                       >
                         <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-5 h-5">
@@ -1010,16 +1347,6 @@ export default function App() {
                         </svg>
                       </button>
 
-                      <button
-                        onClick={() => appendToQueue(song)}
-                        className="p-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-white/5 transition-colors"
-                        title="Add to Queue"
-                      >
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-5 h-5">
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-                        </svg>
-                      </button>
-                      
                       {renderPlaylistDropdown(song, 'down')}
                     </div>
                   </div>
@@ -1036,12 +1363,12 @@ export default function App() {
               <>
                 <div className="flex justify-between items-end">
                   <div>
-                    <h2 className="text-3xl font-extrabold text-white text-glow-purple">Playlists</h2>
+                    <h2 className="text-3xl font-extrabold text-white text-glow-cyan">Playlists</h2>
                     <p className="text-slate-400 text-sm mt-1">Create and manage your custom music collections.</p>
                   </div>
                   <button
                     onClick={openCreatePlaylistModal}
-                    className="flex items-center gap-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-semibold px-5 py-2.5 rounded-xl shadow-lg shadow-purple-600/20 active:scale-[0.98] transition-all text-sm"
+                    className="flex items-center gap-2 bg-cyan-600 hover:bg-cyan-500 text-white font-semibold px-5 py-2.5 rounded-xl shadow-lg shadow-cyan-600/20 active:scale-[0.98] transition-all text-sm"
                   >
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor" className="w-4 h-4">
                       <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
@@ -1051,7 +1378,7 @@ export default function App() {
                 </div>
 
                 {playlists.length === 0 ? (
-                  <div className="text-center py-20 bg-white/2 rounded-2xl border border-slate-800/20">
+                  <div className="text-center py-20 bg-[#141414] rounded-2xl border border-slate-800">
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="w-12 h-12 text-slate-500 mx-auto mb-3">
                       <path strokeLinecap="round" strokeLinejoin="round" d="M12 10.5v11.25m0-11.25a9 9 0 1118 0v11.25m-18 0a9 9 0 0018 0M3.75 13.5h16.5M5.625 4.5h12.75a1.875 1.875 0 010 3.75H5.625a1.875 1.875 0 010-3.75z" />
                     </svg>
@@ -1064,16 +1391,16 @@ export default function App() {
                       <div
                         key={pl.id}
                         onClick={() => setActivePlaylistId(pl.id)}
-                        className="glass-card p-4 rounded-3xl cursor-pointer group hover:border-purple-500/20 relative"
+                        className="glass-card p-4 rounded-3xl cursor-pointer group hover:border-cyan-500/20 relative"
                       >
-                        <div className="aspect-square rounded-2xl bg-gradient-to-br from-purple-900/40 to-indigo-950/40 border border-slate-800/40 flex flex-col items-center justify-center relative mb-4 shadow-inner overflow-hidden">
+                        <div className="aspect-square rounded-2xl bg-cyan-950 hover:bg-cyan-900 border border-slate-800 flex flex-col items-center justify-center relative mb-4 shadow-inner overflow-hidden">
                           {pl.songs.length > 0 ? (
                             <div className="w-full h-full relative">
                               <img src={pl.songs[0].thumbnailUrl} alt={pl.name} className="w-full h-full object-cover opacity-80" />
                               <div className="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent"></div>
                             </div>
                           ) : (
-                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="w-12 h-12 text-purple-400/50">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="w-12 h-12 text-cyan-400/50">
                               <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 00-1.884 2.223v6c0 1.243 1.007 2.25 2.25 2.25h16.5a2.25 2.25 0 002.25-2.25v-6a2.25 2.25 0 00-1.884-2.223m-16.5 0V6.002a2.25 2.25 0 012.25-2.25h5.378a2.25 2.25 0 011.59.659l2.122 2.121c.14.14.33.22.53.22h5.13a2.25 2.25 0 012.25 2.25v1.774" />
                             </svg>
                           )}
@@ -1084,7 +1411,7 @@ export default function App() {
                                 e.stopPropagation();
                                 playPlaylist(pl);
                               }}
-                              className="absolute bottom-3 right-3 w-10 h-10 rounded-full bg-purple-600 hover:bg-purple-500 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 shadow-lg active:scale-95 transform translate-y-2 group-hover:translate-y-0 transition-all"
+                              className="absolute bottom-3 right-3 w-10 h-10 rounded-full bg-cyan-600 hover:bg-cyan-500 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 shadow-lg active:scale-95 transform translate-y-2 group-hover:translate-y-0 transition-all"
                             >
                               <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24" className="w-5 h-5 translate-x-0.5">
                                 <path d="M8 5v14l11-7z" />
@@ -1126,18 +1453,18 @@ export default function App() {
                             deletePlaylist(currentPl.id);
                           }
                         }}
-                        className="px-3.5 py-1.5 text-xs text-red-400 hover:text-red-300 hover:bg-red-500/10 border border-red-500/20 rounded-xl transition-all"
+                        className="px-3.5 py-1.5 text-xs font-semibold text-white bg-cyan-600 hover:bg-cyan-500 rounded-xl transition-all"
                       >
                         Delete Playlist
                       </button>
                     </div>
 
-                    <div className="flex flex-col sm:flex-row gap-6 items-center sm:items-end bg-gradient-to-b from-purple-950/20 to-indigo-950/10 border border-purple-900/20 p-6 rounded-3xl">
-                      <div className="w-32 h-32 rounded-2xl bg-gradient-to-br from-purple-900/30 to-indigo-950/30 border border-slate-800 flex items-center justify-center shadow-md overflow-hidden relative">
+                    <div className="flex flex-col sm:flex-row gap-6 items-center sm:items-end bg-cyan-950 border border-cyan-900/20 p-6 rounded-3xl">
+                      <div className="w-32 h-32 rounded-2xl bg-cyan-950 hover:bg-cyan-900 border border-slate-800 flex items-center justify-center shadow-md overflow-hidden relative">
                         {currentPl.songs.length > 0 ? (
                           <img src={currentPl.songs[0].thumbnailUrl} alt={currentPl.name} className="w-full h-full object-cover" />
                         ) : (
-                          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="w-12 h-12 text-purple-400/50">
+                          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="w-12 h-12 text-cyan-400/50">
                             <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 00-1.884 2.223v6c0 1.243 1.007 2.25 2.25 2.25h16.5a2.25 2.25 0 002.25-2.25v-6a2.25 2.25 0 00-1.884-2.223m-16.5 0V6.002a2.25 2.25 0 012.25-2.25h5.378a2.25 2.25 0 011.59.659l2.122 2.121c.14.14.33.22.53.22h5.13a2.25 2.25 0 012.25 2.25v1.774" />
                           </svg>
                         )}
@@ -1152,7 +1479,7 @@ export default function App() {
                               <span className="w-1.5 h-1.5 rounded-full bg-slate-700"></span>
                               <button
                                 onClick={() => playPlaylist(currentPl)}
-                                className="text-purple-400 hover:text-purple-300 font-bold flex items-center gap-1"
+                                className="text-cyan-400 hover:text-purple-300 font-bold flex items-center gap-1"
                               >
                                 <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24" className="w-4 h-4">
                                   <path d="M8 5v14l11-7z" />
@@ -1167,7 +1494,7 @@ export default function App() {
 
                     <div className="mt-2">
                       {currentPl.songs.length === 0 ? (
-                        <div className="text-center py-20 bg-white/2 rounded-2xl border border-slate-800/20">
+                        <div className="text-center py-20 bg-[#141414] rounded-2xl border border-slate-800">
                           <p className="text-slate-400 text-sm">This playlist is empty. Find songs in Search or Home and add them!</p>
                         </div>
                       ) : (
@@ -1178,7 +1505,7 @@ export default function App() {
                               <div
                                 key={`${song.id}-${index}`}
                                 className={`flex items-center gap-4 p-3 rounded-2xl glass-card relative group ${
-                                  isPlayingCurrent ? 'border-purple-500/20 bg-purple-950/5' : ''
+                                  isPlayingCurrent ? 'border-cyan-500/20 bg-cyan-950' : ''
                                 }`}
                               >
                                 <span className="text-xs text-slate-500 font-bold w-4 text-center">
@@ -1189,7 +1516,7 @@ export default function App() {
                                   <img src={song.thumbnailUrl} alt={song.title} className="w-full h-full object-cover" />
                                   <button
                                     onClick={() => playSong(song)}
-                                    className="absolute inset-0 bg-black/60 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                                    className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
                                   >
                                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5 text-white">
                                       <path d="M8 5v14l11-7z" />
@@ -1198,7 +1525,7 @@ export default function App() {
                                 </div>
 
                                 <div className="flex-1 min-w-0">
-                                  <h4 className={`text-sm font-semibold truncate ${isPlayingCurrent ? 'text-purple-400' : 'text-white'}`}>
+                                  <h4 className={`text-sm font-semibold truncate ${isPlayingCurrent ? 'text-cyan-400' : 'text-white'}`}>
                                     {song.title}
                                   </h4>
                                   <p className="text-xs text-slate-400 truncate mt-0.5">{song.artist}</p>
@@ -1211,7 +1538,7 @@ export default function App() {
                                 <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
                                   <button
                                     onClick={() => appendToQueue(song)}
-                                    className="p-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-white/5 transition-colors"
+                                    className="p-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-[#222222] transition-colors"
                                     title="Add to Queue"
                                   >
                                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-4.5 h-4.5">
@@ -1220,7 +1547,7 @@ export default function App() {
                                   </button>
                                   <button
                                     onClick={() => removeSongFromPlaylist(currentPl.id, song.id)}
-                                    className="p-2 rounded-lg text-slate-400 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                                    className="p-2 rounded-lg text-slate-400 hover:text-red-400 hover:bg-[#2a0e10] transition-colors"
                                     title="Remove from Playlist"
                                   >
                                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-4.5 h-4.5">
@@ -1241,18 +1568,308 @@ export default function App() {
           </div>
         )}
 
+        {/* Active View: MUSIC ROOMS */}
+        {activeTab === 'rooms' && (
+          <div className="flex flex-col gap-6 max-w-6xl mx-auto w-full">
+            {!activeRoom ? (
+              <>
+                {/* Header */}
+                <div>
+                  <h2 className="text-3xl font-extrabold text-white text-glow-cyan">Music Rooms</h2>
+                  <p className="text-slate-400 text-sm mt-1">Create or join a room to listen together with friends in real-time.</p>
+                </div>
+
+                {/* Display Name */}
+                <div className="flex items-center gap-3">
+                  <label className="text-xs text-slate-400 font-semibold uppercase tracking-wider">Your Name</label>
+                  <input
+                    type="text"
+                    value={displayName}
+                    onChange={(e) => setDisplayName(e.target.value)}
+                    className="glass-input px-4 py-2 rounded-xl text-sm text-slate-100 placeholder-slate-500 w-48"
+                    placeholder="Your display name"
+                  />
+                </div>
+
+                {roomError && (
+                  <div className="bg-red-950 border border-red-900 text-red-300 px-4 py-3 rounded-xl text-sm font-medium animate-fade-in">
+                    {roomError}
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                  {/* Create Room Card */}
+                  <div className="bg-[#141121] border border-slate-800 rounded-3xl p-6 flex flex-col gap-4">
+                    <div>
+                      <h3 className="text-xl font-bold text-white">Create Music Room</h3>
+                      <p className="text-slate-400 text-xs mt-1">Start a synchronized listening session with friends.</p>
+                    </div>
+
+                    {!roomCreated ? (
+                      <>
+                        <div className="flex flex-col gap-1.5">
+                          <label className="text-[10px] text-slate-500 uppercase tracking-widest font-bold">Room Name</label>
+                          <input
+                            type="text"
+                            value={newRoomName}
+                            onChange={(e) => setNewRoomName(e.target.value)}
+                            placeholder="Friday Night Vibes"
+                            className="glass-input px-4 py-3 rounded-xl text-sm text-slate-100 placeholder-slate-500"
+                          />
+                        </div>
+
+                        <div className="flex items-center justify-between">
+                          <label className="text-[10px] text-slate-500 uppercase tracking-widest font-bold">Room Visibility</label>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => setRoomVisibility('public')}
+                              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${roomVisibility === 'public' ? 'bg-cyan-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}
+                            >Public</button>
+                            <button
+                              onClick={() => setRoomVisibility('private')}
+                              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${roomVisibility === 'private' ? 'bg-cyan-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}
+                            >Private</button>
+                          </div>
+                        </div>
+
+                        <button
+                          onClick={handleCreateRoom}
+                          disabled={!newRoomName.trim()}
+                          className="w-full bg-cyan-600 hover:bg-cyan-500 text-white font-semibold py-3 rounded-xl shadow-lg active:scale-[0.98] transition-all disabled:opacity-50 text-sm mt-2"
+                        >
+                          Create Room
+                        </button>
+                      </>
+                    ) : (
+                      <div className="flex flex-col gap-4 animate-fade-in">
+                        <div className="flex items-center gap-2 text-green-400 text-sm font-semibold">
+                          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
+                            <path fillRule="evenodd" d="M2.25 12c0-5.385 4.365-9.75 9.75-9.75s9.75 4.365 9.75 9.75-4.365 9.75-9.75 9.75S2.25 17.385 2.25 12zm13.36-1.814a.75.75 0 10-1.22-.872l-3.236 4.53L9.53 12.22a.75.75 0 00-1.06 1.06l2.25 2.25a.75.75 0 001.14-.094l3.75-5.25z" clipRule="evenodd" />
+                          </svg>
+                          Room Created!
+                        </div>
+
+                        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                          <p className="text-[10px] text-slate-500 uppercase tracking-widest font-bold mb-1">Room Code</p>
+                          <p className="text-2xl font-black text-cyan-400 tracking-wider">{roomCode}</p>
+                        </div>
+
+                        <button
+                          onClick={() => copyToClipboard(roomCode, 'code')}
+                          className="w-full bg-slate-800 hover:bg-slate-700 text-white font-semibold py-2.5 rounded-xl transition-all text-sm"
+                        >
+                          {copiedCode ? '✓ Copied!' : 'Copy Room Code'}
+                        </button>
+
+                        <button
+                          onClick={() => copyToClipboard(window.location.origin + '/room/' + roomCode, 'link')}
+                          className="w-full bg-slate-800 hover:bg-slate-700 text-white font-semibold py-2.5 rounded-xl transition-all text-sm"
+                        >
+                          {copiedLink ? '✓ Link Copied!' : 'Copy Invitation Link'}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Join Room Card */}
+                  <div className="bg-[#141121] border border-slate-800 rounded-3xl p-6 flex flex-col gap-4">
+                    <div>
+                      <h3 className="text-xl font-bold text-white">Join Music Room</h3>
+                      <p className="text-slate-400 text-xs mt-1">Enter a room code to listen together.</p>
+                    </div>
+
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-[10px] text-slate-500 uppercase tracking-widest font-bold">Room Code</label>
+                      <input
+                        type="text"
+                        value={joinRoomCode}
+                        onChange={(e) => setJoinRoomCode(e.target.value.toUpperCase())}
+                        placeholder="MZK-4839"
+                        className="glass-input px-4 py-3 rounded-xl text-sm text-slate-100 placeholder-slate-500 uppercase tracking-widest text-center font-bold"
+                      />
+                    </div>
+
+                    <button
+                      onClick={handleJoinRoom}
+                      disabled={!joinRoomCode.trim()}
+                      className="w-full bg-cyan-600 hover:bg-cyan-500 text-white font-semibold py-3 rounded-xl shadow-lg active:scale-[0.98] transition-all disabled:opacity-50 text-sm mt-2"
+                    >
+                      Join Room
+                    </button>
+                  </div>
+
+                  {/* Active Public Rooms */}
+                  <div className="bg-[#141121] border border-slate-800 rounded-3xl p-6 flex flex-col gap-4">
+                    <div>
+                      <h3 className="text-xl font-bold text-white">Active Rooms</h3>
+                      <p className="text-slate-400 text-xs mt-1">Public rooms you can join now.</p>
+                    </div>
+
+                    {publicRooms.length === 0 ? (
+                      <div className="flex-1 flex flex-col items-center justify-center gap-3 py-8 text-center">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="w-10 h-10 text-slate-600">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M18 18.72a9.094 9.094 0 003.741-.479 3 3 0 00-4.682-2.72m.94 3.198l.001.031c0 .225-.012.447-.037.666A11.944 11.944 0 0112 21c-2.17 0-4.207-.576-5.963-1.584A6.062 6.062 0 016 18.719m12 0a5.971 5.971 0 00-.941-3.197m0 0A5.995 5.995 0 0012 12.75a5.995 5.995 0 00-5.058 2.772m0 0a3 3 0 00-4.681 2.72 8.986 8.986 0 003.74.477m.94-3.197a5.971 5.971 0 00-.94 3.197M15 6.75a3 3 0 11-6 0 3 3 0 016 0zm6 3a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0zm-13.5 0a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0z" />
+                        </svg>
+                        <h4 className="text-white font-bold text-sm">No active rooms</h4>
+                        <p className="text-slate-500 text-xs">Create a room to start listening with friends!</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-2 overflow-y-auto max-h-64 custom-scrollbar">
+                        {publicRooms.map((room) => (
+                          <div key={room.code} className="bg-slate-900 border border-slate-800 rounded-xl p-3 flex items-center gap-3">
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-semibold text-white truncate">{room.name}</p>
+                              <p className="text-xs text-slate-400">{room.listenerCount} listening · Host: {room.host}</p>
+                            </div>
+                            <button
+                              onClick={() => {
+                                setJoinRoomCode(room.code);
+                                socketRef.current?.emit('join_room_request', { roomCode: room.code, displayName });
+                              }}
+                              className="px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold rounded-lg transition-all"
+                            >
+                              Join
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </>
+            ) : (
+              /* Active Room Experience */
+              <div className="flex flex-col gap-6 animate-fade-in">
+                {/* Room Header */}
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="flex items-center gap-3">
+                      <h2 className="text-3xl font-extrabold text-white">{activeRoom.name}</h2>
+                      <span className="bg-green-950 text-green-400 text-xs px-2.5 py-1 rounded-full font-bold border border-green-900 animate-pulse">
+                        Live
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-4 mt-1.5">
+                      <span className="text-xs text-slate-400 font-mono">{roomCode}</span>
+                      <span className="text-xs text-slate-400">{roomParticipants.length} Listening</span>
+                      {isHost && <span className="text-xs text-cyan-400 font-semibold">You are the Host</span>}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => copyToClipboard(roomCode, 'code')}
+                      className="px-3 py-2 text-xs font-semibold text-white bg-slate-800 hover:bg-slate-700 rounded-xl transition-all active:scale-[0.98]"
+                    >
+                      {copiedCode ? '✓ Copied!' : 'Copy Code'}
+                    </button>
+                    <button
+                      onClick={() => copyToClipboard(window.location.origin + '/room/' + roomCode, 'link')}
+                      className="px-3 py-2 text-xs font-semibold text-white bg-slate-800 hover:bg-slate-700 rounded-xl transition-all active:scale-[0.98]"
+                    >
+                      {copiedLink ? '✓ Copied!' : 'Copy Link'}
+                    </button>
+                    <button
+                      onClick={handleLeaveRoom}
+                      className="px-4 py-2 text-xs font-semibold text-white bg-cyan-600 hover:bg-cyan-500 rounded-xl transition-all active:scale-[0.98]"
+                    >
+                      Leave Room
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                  {/* Current Song Card */}
+                  <div className="lg:col-span-2 bg-[#141121] border border-slate-800 rounded-3xl p-6">
+                    <h3 className="text-sm font-bold text-slate-400 uppercase tracking-widest mb-4">Now Playing</h3>
+                    {currentSong ? (
+                      <div className="flex items-center gap-5">
+                        <img src={currentSong.thumbnailUrl} alt={currentSong.title} className="w-24 h-24 rounded-2xl object-cover border border-slate-800 shadow-md" />
+                        <div className="flex-1 min-w-0">
+                          <h4 className="text-xl font-bold text-white truncate">{currentSong.title}</h4>
+                          <p className="text-sm text-slate-400 truncate">{currentSong.artist}</p>
+                          <div className="flex items-center gap-2 mt-3">
+                            <div className="flex gap-1 items-end h-6">
+                              {[12, 18, 10, 22, 14].map((h, i) => (
+                                <div key={i} className={`w-1 rounded-full bg-cyan-400 transition-all duration-300 ${isPlaying ? 'waveform-bar' : ''}`} style={{ height: isPlaying ? `${h}px` : '4px', animationDelay: `${i * 0.15}s` }}></div>
+                              ))}
+                            </div>
+                            <span className="text-xs text-cyan-400 font-semibold ml-2">
+                              {isPlaying ? 'Playing' : 'Paused'}
+                            </span>
+                          </div>
+                          {isHost && <p className="text-[10px] text-slate-500 mt-2">Your playback is synced to all listeners.</p>}
+                          {!isHost && <p className="text-[10px] text-slate-500 mt-2">Synced with the host&apos;s playback.</p>}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center justify-center py-10 text-center gap-3">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="w-12 h-12 text-slate-600">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M9 9l10.5-3m0 6.553v3.75a2.25 2.25 0 01-1.632 2.163l-1.32.377a1.803 1.803 0 11-.99-3.467l2.31-.66a2.25 2.25 0 001.632-2.163zm0 0V2.25L9 5.25v10.303m0 0v3.75a2.25 2.25 0 01-1.632 2.163l-1.32.377a1.803 1.803 0 01-.99-3.467l2.31-.66A2.25 2.25 0 009 15.553z" />
+                        </svg>
+                        <p className="text-slate-400 text-sm font-medium">No song playing yet</p>
+                        {isHost && <p className="text-slate-500 text-xs">Search for a song and play it to start the session!</p>}
+                        {!isHost && <p className="text-slate-500 text-xs">Waiting for the host to play a song...</p>}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Participants */}
+                  <div className="bg-[#141121] border border-slate-800 rounded-3xl p-6">
+                    <h3 className="text-sm font-bold text-slate-400 uppercase tracking-widest mb-4">
+                      Listeners ({roomParticipants.length})
+                    </h3>
+                    <div className="space-y-2.5 overflow-y-auto max-h-48 custom-scrollbar">
+                      {roomParticipants.map((p, i) => (
+                        <div key={i} className="flex items-center gap-3 p-2 rounded-xl hover:bg-slate-900 transition-colors">
+                          <div className="w-8 h-8 rounded-full bg-cyan-950 border border-cyan-900 flex items-center justify-center text-cyan-400 text-xs font-bold">
+                            {p.displayName?.charAt(0)?.toUpperCase() || '?'}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm text-white font-semibold truncate">{p.displayName}</p>
+                          </div>
+                          {p.isHost && (
+                            <span className="text-[10px] bg-cyan-950 text-cyan-400 px-2 py-0.5 rounded-full font-bold border border-cyan-900">Host</span>
+                          )}
+                          <div className="w-2 h-2 rounded-full bg-green-400"></div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Activity Feed */}
+                <div className="bg-[#141121] border border-slate-800 rounded-3xl p-6">
+                  <h3 className="text-sm font-bold text-slate-400 uppercase tracking-widest mb-4">Room Activity</h3>
+                  {roomActivity.length === 0 ? (
+                    <p className="text-slate-500 text-xs">Activity will appear here as things happen in the room.</p>
+                  ) : (
+                    <div className="space-y-1.5 overflow-y-auto max-h-32 custom-scrollbar">
+                      {roomActivity.slice().reverse().map((act, i) => (
+                        <div key={i} className="flex items-center gap-2 text-xs text-slate-400 py-1">
+                          <span className="text-slate-600">{new Date(act.timestamp).toLocaleTimeString()}</span>
+                          <span>{act.message}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Active View: QUEUE */}
         {activeTab === 'queue' && (
           <div className="flex flex-col gap-6 max-w-5xl mx-auto w-full">
             <div className="flex justify-between items-end">
               <div>
-                <h2 className="text-3xl font-extrabold text-white text-glow-purple">Play Queue</h2>
+                <h2 className="text-3xl font-extrabold text-white text-glow-cyan">Play Queue</h2>
                 <p className="text-slate-400 text-sm mt-1">Manage tracks queued up for sequential playback.</p>
               </div>
               {queue.length > 0 && (
                 <button
                   onClick={clearQueue}
-                  className="px-4 py-2 text-xs font-semibold bg-red-950/20 text-red-400 hover:bg-red-900/20 border border-red-950/50 rounded-xl transition-all active:scale-[0.98]"
+                  className="px-4 py-2 text-xs font-semibold text-white bg-cyan-600 hover:bg-cyan-500 rounded-xl transition-all active:scale-[0.98]"
                 >
                   Clear Queue
                 </button>
@@ -1261,7 +1878,7 @@ export default function App() {
 
             {/* Currently Playing Card inside Queue */}
             {currentSong && (
-              <div className="bg-gradient-to-r from-purple-950/25 to-indigo-950/15 border border-purple-900/30 p-5 rounded-3xl flex items-center gap-5 relative">
+              <div className="bg-gradient-to-r from-cyan-950 to-cyan-950 border border-cyan-900/30 p-5 rounded-3xl flex items-center gap-5 relative">
                 <div className="absolute top-4 right-5 flex items-center gap-0.5">
                   {isPlaying ? (
                     <>
@@ -1280,7 +1897,7 @@ export default function App() {
                 </div>
                 
                 <div className="min-w-0">
-                  <span className="text-[10px] bg-purple-500/20 text-purple-400 border border-purple-500/30 px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">
+                  <span className="text-[10px] bg-[#0a2e36] text-cyan-400 border border-[#0d3f4a] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">
                     Now Playing
                   </span>
                   <h3 className="text-lg font-bold text-white truncate mt-2">{currentSong.title}</h3>
@@ -1293,7 +1910,7 @@ export default function App() {
             <div>
               <h3 className="text-lg font-bold text-white tracking-wide mb-3">Up Next</h3>
               {queue.length === 0 ? (
-                <div className="text-center py-20 bg-white/2 rounded-2xl border border-slate-800/20">
+                <div className="text-center py-20 bg-[#141414] rounded-2xl border border-slate-800">
                   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="w-12 h-12 text-slate-500 mx-auto mb-3">
                     <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 010 3.75H5.625a1.875 1.875 0 010-3.75z" />
                   </svg>
@@ -1308,7 +1925,7 @@ export default function App() {
                       <div 
                         key={`${song.id}-${index}`}
                         className={`flex items-center gap-4 p-3 rounded-2xl glass-card relative group ${
-                          isPlayingCurrent ? 'border-purple-500/20 bg-purple-950/5' : ''
+                          isPlayingCurrent ? 'border-cyan-500/20 bg-cyan-950' : ''
                         }`}
                       >
                         <span className="text-xs text-slate-500 font-bold w-4 text-center">
@@ -1318,8 +1935,8 @@ export default function App() {
                         <div className="w-11 h-11 rounded-lg overflow-hidden relative flex-shrink-0 bg-slate-900">
                           <img src={song.thumbnailUrl} alt={song.title} className="w-full h-full object-cover" />
                           <button
-                            onClick={() => setCurrentSong(song)}
-                            className="absolute inset-0 bg-black/60 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                            onClick={() => playSong(song)}
+                            className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
                           >
                             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5 text-white">
                               <path d="M8 5v14l11-7z" />
@@ -1328,7 +1945,7 @@ export default function App() {
                         </div>
 
                         <div className="flex-1 min-w-0">
-                          <h4 className={`text-sm font-semibold truncate ${isPlayingCurrent ? 'text-purple-400' : 'text-white'}`}>
+                          <h4 className={`text-sm font-semibold truncate ${isPlayingCurrent ? 'text-cyan-400' : 'text-white'}`}>
                             {song.title}
                           </h4>
                           <p className="text-xs text-slate-400 truncate mt-0.5">{song.artist}</p>
@@ -1340,7 +1957,7 @@ export default function App() {
 
                         <button
                           onClick={() => removeFromQueue(song.id)}
-                          className="p-1.5 rounded-lg text-slate-400 hover:text-red-400 hover:bg-red-500/10 opacity-0 group-hover:opacity-100 transition-all"
+                          className="p-1.5 rounded-lg text-slate-400 hover:text-red-400 hover:bg-[#2a0e10] opacity-0 group-hover:opacity-100 transition-all"
                           title="Remove from Queue"
                         >
                           <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-4 h-4">
@@ -1358,26 +1975,26 @@ export default function App() {
       </main>
 
       {/* Sticky Bottom Media Control Bar */}
-      <footer className="h-24 w-full glass-panel border-t border-slate-800/40 absolute bottom-0 left-0 right-0 z-30 flex items-center justify-between px-6">
+      <footer className="h-20 md:h-24 w-full glass-panel border-t border-slate-800 absolute bottom-0 left-0 right-0 z-30 flex items-center justify-between px-2 md:px-6">
         
         {/* Left: Active Song details */}
-        <div className="w-1/4 flex items-center gap-3">
+        <div className="w-[35%] md:w-1/4 flex items-center gap-2 md:gap-3">
           {currentSong ? (
             <>
-              <div className="w-14 h-14 rounded-xl overflow-hidden bg-slate-900 border border-slate-800/50 shadow flex-shrink-0">
+              <div className="w-10 h-10 md:w-14 md:h-14 rounded-xl overflow-hidden bg-slate-900 border border-slate-800 shadow flex-shrink-0">
                 <img src={currentSong.thumbnailUrl} alt={currentSong.title} className="w-full h-full object-cover" />
               </div>
               <div className="min-w-0">
-                <h4 className="text-sm font-bold text-white truncate max-w-[200px]">
+                <h4 className="text-xs md:text-sm font-bold text-white truncate max-w-[100px] md:max-w-[200px]">
                   {currentSong.title}
                 </h4>
-                <p className="text-xs text-slate-400 truncate max-w-[200px] mt-0.5">
+                <p className="text-[10px] md:text-xs text-slate-400 truncate max-w-[100px] md:max-w-[200px] mt-0.5">
                   {currentSong.artist}
                 </p>
               </div>
               <button
                 onClick={() => toggleFavorite(currentSong)}
-                className={`p-1.5 rounded-lg hover:bg-white/5 transition-colors ml-2 ${
+                className={`p-1 md:p-1.5 rounded-lg hover:bg-[#222222] transition-colors ml-1 md:ml-2 ${
                   favorites.some(s => s.id === currentSong.id) ? 'text-pink-500' : 'text-slate-400 hover:text-slate-200'
                 }`}
               >
@@ -1387,29 +2004,29 @@ export default function App() {
               </button>
             </>
           ) : (
-            <div className="flex items-center gap-3">
-              <div className="w-14 h-14 rounded-xl bg-white/2 border border-dashed border-slate-800 flex items-center justify-center flex-shrink-0">
+            <div className="flex items-center gap-2 md:gap-3">
+              <div className="hidden md:flex w-14 h-14 rounded-xl bg-[#141414] border border-dashed border-slate-800 items-center justify-center flex-shrink-0">
                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="w-5 h-5 text-slate-600">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M9 9l10.5-3m0 0v13.5m0-13.5L9 12.5m0 0v6.75m0-6.75L3 15.75M9 19.5a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0zm10.5-3a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0z" />
                 </svg>
               </div>
               <div>
-                <h4 className="text-sm font-semibold text-slate-500">No Song Loaded</h4>
-                <p className="text-xs text-slate-600">Play a track to start</p>
+                <h4 className="text-xs md:text-sm font-semibold text-slate-500">No Song Loaded</h4>
+                <p className="text-[10px] md:text-xs text-slate-600 hidden md:block">Play a track to start</p>
               </div>
             </div>
           )}
         </div>
 
         {/* Center: Playback Controls & Progress Bar */}
-        <div className="w-2/5 flex flex-col items-center gap-1.5">
+        <div className="flex-1 md:w-2/5 flex flex-col items-center gap-1 md:gap-1.5 px-2 md:px-0">
           {/* Controls buttons */}
-          <div className="flex items-center gap-5">
+          <div className="flex items-center gap-3 md:gap-5">
             {/* Shuffle button */}
             <button
               onClick={handleShuffleToggle}
-              className={`transition-colors p-1.5 rounded ${
-                shuffle ? 'text-purple-400 text-glow-purple' : 'text-slate-500 hover:text-slate-300'
+              className={`hidden sm:block transition-colors p-1.5 rounded ${
+                shuffle ? 'text-cyan-400 text-glow-cyan' : 'text-slate-500 hover:text-slate-300'
               }`}
               title="Shuffle"
             >
@@ -1432,9 +2049,15 @@ export default function App() {
 
             {/* Play/Pause Button */}
             <button
-              onClick={() => setIsPlaying(!isPlaying)}
+              onClick={() => {
+                if (activeRoom && !isHost && socketRef.current) {
+                  socketRef.current.emit('request_playback', { isPlaying: !isPlaying, displayName });
+                  return;
+                }
+                setIsPlaying(!isPlaying);
+              }}
               disabled={!currentSong || !isPlayerReady}
-              className="w-11 h-11 rounded-full bg-white text-black flex items-center justify-center shadow-lg active:scale-95 transition-transform disabled:opacity-50 disabled:pointer-events-none hover:bg-slate-100"
+              className="w-9 h-9 md:w-11 md:h-11 rounded-full bg-white text-black flex items-center justify-center shadow-lg active:scale-95 transition-transform disabled:opacity-50 disabled:pointer-events-none hover:bg-slate-100 flex-shrink-0"
               title={isPlaying ? 'Pause' : 'Play'}
             >
               {isPlaying ? (
@@ -1463,8 +2086,8 @@ export default function App() {
             {/* Repeat button */}
             <button
               onClick={toggleRepeat}
-              className={`transition-colors p-1.5 rounded relative ${
-                repeat !== 'off' ? 'text-purple-400 text-glow-purple' : 'text-slate-500 hover:text-slate-300'
+              className={`hidden sm:block transition-colors p-1.5 rounded relative ${
+                repeat !== 'off' ? 'text-cyan-400 text-glow-cyan' : 'text-slate-500 hover:text-slate-300'
               }`}
               title={`Repeat: ${repeat}`}
             >
@@ -1472,7 +2095,7 @@ export default function App() {
                 <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
               </svg>
               {repeat === 'one' && (
-                <span className="absolute bottom-[1px] right-[1px] text-[7px] font-extrabold bg-purple-500 text-white rounded-full w-2.5 h-2.5 flex items-center justify-center border border-[#0b0813]">
+                <span className="absolute bottom-[1px] right-[1px] text-[7px] font-extrabold bg-cyan-500 text-white rounded-full w-2.5 h-2.5 flex items-center justify-center border border-[#0b0813]">
                   1
                 </span>
               )}
@@ -1491,7 +2114,7 @@ export default function App() {
               value={currentTime}
               onChange={handleSeekChange}
               disabled={!currentSong || !isPlayerReady}
-              className="flex-1 accent-purple-500 h-1 rounded-lg bg-slate-800/80 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+              className="flex-1 accent-cyan-500 h-1 rounded-lg bg-slate-800 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
             />
             <span className="text-[10px] text-slate-500 font-bold tracking-wider w-8 select-none">
               {formatTime(duration)}
@@ -1500,7 +2123,7 @@ export default function App() {
         </div>
 
         {/* Right: Volume & Extra Controls */}
-        <div className="w-1/4 flex items-center justify-end gap-3.5">
+        <div className="hidden md:flex w-1/4 items-center justify-end gap-3.5">
           <div className="flex items-center gap-2">
             <button
               onClick={() => setIsMuted(!isMuted)}
@@ -1531,22 +2154,11 @@ export default function App() {
                 setVolume(parseInt(e.target.value, 10));
                 setIsMuted(false);
               }}
-              className="w-20 accent-purple-500 h-1 rounded bg-slate-800 cursor-pointer"
+              className="w-20 accent-cyan-500 h-1 rounded bg-slate-800 cursor-pointer"
             />
           </div>
 
-          {/* Toggle expands video size button */}
-          <button
-            onClick={() => setIsVideoExpanded(!isVideoExpanded)}
-            className={`p-2 rounded-lg hover:bg-white/5 transition-colors border ${
-              isVideoExpanded ? 'text-purple-400 border-purple-800/30' : 'text-slate-500 border-transparent hover:text-slate-300'
-            }`}
-            title={isVideoExpanded ? 'Collapse Video Feed' : 'Expand Video Feed'}
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-4 h-4">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 20.25h12A2.25 2.25 0 0020.25 18V6A2.25 2.25 0 0018 3.75H6A2.25 2.25 0 003.75 6v12A2.25 2.25 0 006 20.25z" />
-            </svg>
-          </button>
+
         </div>
 
       </footer>
@@ -1554,7 +2166,7 @@ export default function App() {
       {/* Native Playlist Creation Modal Dialog */}
       <dialog
         ref={createPlaylistDialogRef}
-        className="dialog-reset rounded-3xl p-6 bg-[#161224] border border-purple-950/40 text-slate-200 w-80 shadow-2xl relative select-text"
+        className="dialog-reset rounded-3xl p-6 bg-black/40 border border-cyan-950 text-slate-200 w-80 shadow-2xl relative select-text"
         closedby="any"
       >
         <form onSubmit={handleCreatePlaylistSubmit} className="flex flex-col gap-4">
@@ -1566,7 +2178,7 @@ export default function App() {
             placeholder="e.g. Chill Beats, Gym Hits"
             value={newPlaylistName}
             onChange={(e) => setNewPlaylistName(e.target.value)}
-            className="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-100 placeholder-slate-500 focus:outline-none focus:border-purple-500 text-sm"
+            className="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-100 placeholder-slate-500 focus:outline-none focus:border-cyan-500 text-sm"
           />
           <div className="flex gap-2 justify-end mt-2">
             <button
@@ -1578,13 +2190,54 @@ export default function App() {
             </button>
             <button
               type="submit"
-              className="px-4 py-2 text-xs font-semibold bg-purple-600 hover:bg-purple-500 text-white rounded-lg shadow transition-colors"
+              className="px-4 py-2 text-xs font-semibold bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg shadow transition-colors"
             >
               Create
             </button>
           </div>
         </form>
       </dialog>
+
+      {/* Song Request Notifications (Host Only) */}
+      {pendingSongRequests.length > 0 && isHost && (
+        <div className="fixed bottom-24 right-6 z-50 flex flex-col gap-3 max-w-sm w-full">
+          {pendingSongRequests.map((req) => (
+            <div key={req.id} className="bg-[#141121] border border-slate-700 rounded-2xl p-4 shadow-2xl animate-fade-in">
+              <div className="flex items-center gap-2 mb-3">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="w-4 h-4 text-cyan-400">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 9l10.5-3m0 6.553v3.75a2.25 2.25 0 01-1.632 2.163l-1.32.377a1.803 1.803 0 11-.99-3.467l2.31-.66a2.25 2.25 0 001.632-2.163zm0 0V2.25L9 5.25v10.303m0 0v3.75a2.25 2.25 0 01-1.632 2.163l-1.32.377a1.803 1.803 0 01-.99-3.467l2.31-.66A2.25 2.25 0 009 15.553z" />
+                </svg>
+                <span className="text-xs text-cyan-400 font-bold uppercase tracking-wider">Song Request</span>
+              </div>
+              <div className="flex items-center gap-3 mb-3">
+                <img
+                  src={req.song.thumbnailUrl}
+                  alt={req.song.title}
+                  className="w-12 h-12 rounded-xl object-cover border border-slate-800"
+                />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-bold text-white truncate">{req.song.title}</p>
+                  <p className="text-xs text-slate-400 truncate">Requested by <span className="text-cyan-400 font-semibold">{req.requestedBy}</span></p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => handleAcceptSongRequest(req)}
+                  className="flex-1 px-3 py-2 text-xs font-semibold text-white bg-cyan-600 hover:bg-cyan-500 rounded-xl transition-all active:scale-[0.98]"
+                >
+                  ✓ Accept
+                </button>
+                <button
+                  onClick={() => handleDeclineSongRequest(req)}
+                  className="flex-1 px-3 py-2 text-xs font-semibold text-white bg-slate-800 hover:bg-slate-700 rounded-xl transition-all active:scale-[0.98]"
+                >
+                  ✕ Decline
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
