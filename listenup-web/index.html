@@ -2,9 +2,68 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎵</text></svg>" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ListenUp Web - Advanced Music Client</title>
+    
+    <!-- Primary Meta Tags -->
+    <title>ListenUp | Real-Time Collaborative Music Streaming Platform</title>
+    <meta name="title" content="ListenUp | Real-Time Collaborative Music Streaming Platform" />
+    <meta name="description" content="ListenUp is a modern music streaming platform that lets users discover, stream, organize music, and listen together in real time using WebSockets and YouTube." />
+    <meta name="keywords" content="ListenUp, music streaming, collaborative music player, listen together, music rooms, React music app, Flask music app, WebSocket music app, YouTube music player" />
+    <meta name="theme-color" content="#08060c" />
+    
+    <!-- Search Engine & Crawling Directives -->
+    <meta name="robots" content="index, follow" />
+    <link rel="canonical" href="https://listenup.vercel.app/" />
+    
+    <!-- PWA Manifest -->
+    <link rel="manifest" href="/manifest.json" />
+
+    <!-- Open Graph / Facebook / LinkedIn -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://listenup.vercel.app/" />
+    <meta property="og:title" content="ListenUp | Real-Time Collaborative Music Streaming Platform" />
+    <meta property="og:description" content="ListenUp is a modern music streaming platform that lets users discover, stream, organize music, and listen together in real time using WebSockets and YouTube." />
+    <meta property="og:image" content="https://listenup.vercel.app/og-image.jpg" />
+    <meta property="og:site_name" content="ListenUp" />
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:url" content="https://listenup.vercel.app/" />
+    <meta name="twitter:title" content="ListenUp | Real-Time Collaborative Music Streaming Platform" />
+    <meta name="twitter:description" content="ListenUp is a modern music streaming platform that lets users discover, stream, organize music, and listen together in real time using WebSockets and YouTube." />
+    <meta name="twitter:image" content="https://listenup.vercel.app/og-image.jpg" />
+
+    <!-- Favicon -->
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎵</text></svg>" />
+    
+    <!-- Structured Data JSON-LD -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@graph": [
+        {
+          "@type": "Organization",
+          "name": "ListenUp",
+          "url": "https://listenup.vercel.app/",
+          "logo": "https://listenup.vercel.app/logo.png"
+        },
+        {
+          "@type": "WebApplication",
+          "name": "ListenUp",
+          "url": "https://listenup.vercel.app/",
+          "description": "ListenUp is a real-time collaborative music streaming platform built with React, WebSockets, and the YouTube Iframe Player API.",
+          "applicationCategory": "MusicApplication",
+          "operatingSystem": "Web",
+          "offers": {
+            "@type": "Offer",
+            "price": "0.00",
+            "priceCurrency": "USD"
+          }
+        }
+      ]
+    }
+    </script>
+
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
