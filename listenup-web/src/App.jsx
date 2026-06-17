@@ -950,7 +950,7 @@ export default function App() {
   };
 
   return (
-    <div className="flex h-screen w-screen bg-black text-slate-200 overflow-hidden relative font-sans">
+    <div className="flex h-[100dvh] w-screen bg-black text-slate-200 overflow-hidden relative font-sans">
       
       
       <div className="absolute bottom-[-10%] right-[-10%] w-[60%] h-[60%] bg-cyan-900 rounded-full blur-[140px] pointer-events-none"></div>
@@ -2077,7 +2077,7 @@ export default function App() {
       </main>
 
       {/* Sticky Bottom Media Control Bar */}
-      <footer className="h-20 md:h-24 w-full glass-panel border-t border-slate-800 absolute bottom-0 left-0 right-0 z-50 flex items-center justify-between px-2 md:px-6">
+      <footer className="h-20 md:h-24 w-full glass-panel border-t border-slate-800 fixed bottom-0 left-0 right-0 z-50 flex items-center justify-between px-2 md:px-6 pb-[env(safe-area-inset-bottom)]">
         
         {/* Left: Active Song details */}
         <div className="w-[35%] md:w-1/4 flex items-center gap-2 md:gap-3">
