@@ -1226,10 +1226,10 @@ export default function App() {
                           >
                             <div className="relative aspect-square w-full rounded-xl overflow-hidden bg-slate-900 border border-slate-800">
                               <img src={song.thumbnailUrl} alt={song.title} className="w-full h-full object-cover" />
-                              <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                              <div className="absolute inset-0 bg-transparent md:bg-black/40 flex items-center justify-center opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity pointer-events-none md:pointer-events-auto">
                                 <button
-                                  onClick={() => playSong(song)}
-                                  className="w-11 h-11 rounded-full bg-cyan-600 text-white flex items-center justify-center shadow-lg transform scale-90 group-hover:scale-100 hover:bg-cyan-500 active:scale-95 transition-all"
+                                  onClick={(e) => { e.stopPropagation(); playSong(song); }}
+                                  className="w-10 h-10 md:w-11 md:h-11 rounded-full bg-cyan-600/90 md:bg-cyan-600 text-white flex items-center justify-center shadow-lg transform md:scale-90 md:group-hover:scale-100 hover:bg-cyan-500 active:scale-95 transition-all pointer-events-auto absolute bottom-2 right-2 md:static"
                                   title="Play"
                                 >
                                   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6 translate-x-0.5">
@@ -1344,14 +1344,16 @@ export default function App() {
                     >
                       <div className="w-14 h-14 rounded-xl overflow-hidden relative flex-shrink-0 bg-slate-900 border border-slate-800">
                         <img src={song.thumbnailUrl} alt={song.title} className="w-full h-full object-cover" />
-                        <button 
-                          onClick={() => playSong(song)}
-                          className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-                        >
-                          <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24" className="w-6 h-6 text-white">
-                            <path d="M8 5v14l11-7z" />
-                          </svg>
-                        </button>
+                        <div className="absolute inset-0 bg-transparent md:bg-black/40 flex items-center justify-center opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity pointer-events-none md:pointer-events-auto">
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); playSong(song); }}
+                            className="w-10 h-10 md:w-12 md:h-12 rounded-full bg-cyan-600/90 md:bg-transparent md:bg-none md:hover:bg-cyan-600/50 text-white flex items-center justify-center shadow-lg md:shadow-none pointer-events-auto absolute bottom-2 right-2 md:static transition-all"
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24" className="w-6 h-6 text-white translate-x-0.5">
+                              <path d="M8 5v14l11-7z" />
+                            </svg>
+                          </button>
+                        </div>
                       </div>
 
                       <div className="flex-1 min-w-0">
@@ -1412,14 +1414,16 @@ export default function App() {
                   >
                     <div className="w-14 h-14 rounded-xl overflow-hidden relative flex-shrink-0 bg-slate-900 border border-slate-800">
                       <img src={song.thumbnailUrl} alt={song.title} className="w-full h-full object-cover" />
-                      <button 
-                        onClick={() => playSong(song)}
-                        className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-                      >
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24" className="w-6 h-6 text-white">
-                          <path d="M8 5v14l11-7z" />
-                        </svg>
-                      </button>
+                      <div className="absolute inset-0 bg-transparent md:bg-black/40 flex items-center justify-center opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity pointer-events-none md:pointer-events-auto">
+                        <button 
+                          onClick={(e) => { e.stopPropagation(); playSong(song); }}
+                          className="w-10 h-10 md:w-12 md:h-12 rounded-full bg-cyan-600/90 md:bg-transparent md:bg-none md:hover:bg-cyan-600/50 text-white flex items-center justify-center shadow-lg md:shadow-none pointer-events-auto absolute bottom-2 right-2 md:static transition-all"
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24" className="w-6 h-6 text-white translate-x-0.5">
+                            <path d="M8 5v14l11-7z" />
+                          </svg>
+                        </button>
+                      </div>
                     </div>
 
                     <div className="flex-1 min-w-0">
@@ -1490,7 +1494,7 @@ export default function App() {
                         <div className="aspect-square rounded-2xl bg-cyan-950 hover:bg-cyan-900 border border-slate-800 flex flex-col items-center justify-center relative mb-4 shadow-inner overflow-hidden">
                           {pl.songs.length > 0 ? (
                             <div className="w-full h-full relative">
-                              <img src={pl.songs[0].thumbnailUrl} alt={pl.name} className="w-full h-full object-cover opacity-80" />
+                              <img src={pl.songs[0].thumbnailUrl} alt={pl.name} className="w-full h-full object-cover" />
                               <div className="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent"></div>
                             </div>
                           ) : (
@@ -1608,14 +1612,16 @@ export default function App() {
 
                                 <div className="w-11 h-11 rounded-lg overflow-hidden relative flex-shrink-0 bg-slate-900">
                                   <img src={song.thumbnailUrl} alt={song.title} className="w-full h-full object-cover" />
-                                  <button
-                                    onClick={() => playSong(song)}
-                                    className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-                                  >
-                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5 text-white">
-                                      <path d="M8 5v14l11-7z" />
-                                    </svg>
-                                  </button>
+                                  <div className="absolute inset-0 bg-transparent md:bg-black/40 flex items-center justify-center opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity pointer-events-none md:pointer-events-auto">
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); playSong(song); }}
+                                      className="w-8 h-8 md:w-10 md:h-10 rounded-full bg-cyan-600/90 md:bg-transparent md:bg-none md:hover:bg-cyan-600/50 text-white flex items-center justify-center shadow-lg md:shadow-none pointer-events-auto absolute bottom-2 right-2 md:static transition-all"
+                                    >
+                                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5 text-white translate-x-0.5">
+                                        <path d="M8 5v14l11-7z" />
+                                      </svg>
+                                    </button>
+                                  </div>
                                 </div>
 
                                 <div className="flex-1 min-w-0">
@@ -2028,14 +2034,16 @@ export default function App() {
 
                         <div className="w-11 h-11 rounded-lg overflow-hidden relative flex-shrink-0 bg-slate-900">
                           <img src={song.thumbnailUrl} alt={song.title} className="w-full h-full object-cover" />
-                          <button
-                            onClick={() => playSong(song)}
-                            className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-                          >
-                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5 text-white">
-                              <path d="M8 5v14l11-7z" />
-                            </svg>
-                          </button>
+                          <div className="absolute inset-0 bg-transparent md:bg-black/40 flex items-center justify-center opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity pointer-events-none md:pointer-events-auto">
+                            <button
+                              onClick={(e) => { e.stopPropagation(); playSong(song); }}
+                              className="w-8 h-8 md:w-10 md:h-10 rounded-full bg-cyan-600/90 md:bg-transparent md:bg-none md:hover:bg-cyan-600/50 text-white flex items-center justify-center shadow-lg md:shadow-none pointer-events-auto absolute bottom-1 right-1 md:static transition-all"
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5 text-white translate-x-0.5">
+                                <path d="M8 5v14l11-7z" />
+                              </svg>
+                            </button>
+                          </div>
                         </div>
 
                         <div className="flex-1 min-w-0">
