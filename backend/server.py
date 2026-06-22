@@ -53,8 +53,8 @@ def search():
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Query up to 15 results
-            info = ydl.extract_info(f"ytsearch15:{query}", download=False)
+            # Query up to 30 results to account for filtered items
+            info = ydl.extract_info(f"ytsearch30:{query}", download=False)
             entries = info.get('entries', [])
             
             results = []
@@ -65,8 +65,10 @@ def search():
                 if not video_id:
                     continue
                 
-                # Format duration
+                # Format duration and filter out shorts (<1m) and mashups/mixes (>10m)
                 duration = entry.get('duration') or 0
+                if duration < 60 or duration > 600:
+                    continue
                 
                 # Fallback thumbnail if missing
                 thumbnail = f"https://i.ytimg.com/vi/{video_id}/mqdefault.jpg"
@@ -83,6 +85,8 @@ def search():
                     "viewCount": entry.get('view_count') or 0
                 })
                 
+            # Return max 15 results
+            results = results[:15]
             logger.info(f"Found {len(results)} search results for query: {query}")
             return jsonify(results)
     except Exception as e:
@@ -132,7 +136,8 @@ def browse():
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(f"ytsearch10:{query}", download=False)
+            # Query 30 results to account for filtered mashups
+            info = ydl.extract_info(f"ytsearch30:{query}", download=False)
             entries = info.get('entries', [])
             
             results = []
@@ -144,6 +149,9 @@ def browse():
                     continue
                 
                 duration = entry.get('duration') or 0
+                if duration < 60 or duration > 600:
+                    continue
+                    
                 thumbnail = f"https://i.ytimg.com/vi/{video_id}/mqdefault.jpg"
                 thumbnails = entry.get('thumbnails', [])
                 if thumbnails:
@@ -158,7 +166,8 @@ def browse():
                     "viewCount": entry.get('view_count') or 0
                 })
             
-            # Cache the results
+            # Limit to 15 results and cache
+            results = results[:15]
             _browse_cache[cache_key] = (results, now)
             logger.info(f"Browse '{category}': found {len(results)} results")
             return jsonify(results)
