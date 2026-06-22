@@ -614,6 +614,20 @@ export default function App() {
     }
   };
 
+  // Play a song from a list/section and queue all remaining songs as "Up Next"
+  const playSongFromList = (song, allSongs) => {
+    const { activeRoom: currentRoom, isHost: currentIsHost } = stateRef.current;
+    if (currentRoom && !currentIsHost && socketRef.current) {
+      socketRef.current.emit('request_song', { song, displayName });
+      return;
+    }
+    const songIdx = allSongs.findIndex(s => s.id === song.id);
+    // Build queue: all songs starting from the tapped one
+    const newQueue = songIdx !== -1 ? allSongs.slice(songIdx) : [song, ...allSongs.filter(s => s.id !== song.id)];
+    setQueue(newQueue);
+    setCurrentSong(song);
+  };
+
   function addToQueueSilent(song) {
     setQueue(prev => {
       if (prev.some(s => s.id === song.id)) return prev;
@@ -1117,7 +1131,7 @@ export default function App() {
                               <img src={song.thumbnailUrl} alt={song.title} className="w-full h-full object-cover" />
                               <div className="absolute inset-0 bg-transparent md:bg-black/40 flex items-center justify-center opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity pointer-events-none md:pointer-events-auto">
                                 <button
-                                  onClick={(e) => { e.stopPropagation(); playSong(song); }}
+                                  onClick={(e) => { e.stopPropagation(); playSongFromList(song, songs); }}
                                   className="w-10 h-10 md:w-11 md:h-11 rounded-full bg-cyan-600/90 md:bg-cyan-600 text-white flex items-center justify-center shadow-lg transform md:scale-90 md:group-hover:scale-100 hover:bg-cyan-500 active:scale-95 transition-all pointer-events-auto absolute bottom-2 right-2 md:static"
                                   title="Play"
                                 >
@@ -1245,7 +1259,7 @@ export default function App() {
                         <img src={song.thumbnailUrl} alt={song.title} className="w-full h-full object-cover" />
                         <div className="absolute inset-0 bg-transparent md:bg-black/40 flex items-center justify-center opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity pointer-events-none md:pointer-events-auto">
                           <button 
-                            onClick={(e) => { e.stopPropagation(); playSong(song); }}
+                            onClick={(e) => { e.stopPropagation(); playSongFromList(song, searchResults); }}
                             className="w-10 h-10 md:w-12 md:h-12 rounded-full bg-cyan-600/90 md:bg-transparent md:bg-none md:hover:bg-cyan-600/50 text-white flex items-center justify-center shadow-lg md:shadow-none pointer-events-auto absolute bottom-2 right-2 md:static transition-all"
                           >
                             <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24" className="w-6 h-6 text-white translate-x-0.5">
@@ -1325,7 +1339,7 @@ export default function App() {
                       <img src={song.thumbnailUrl} alt={song.title} className="w-full h-full object-cover" />
                       <div className="absolute inset-0 bg-transparent md:bg-black/40 flex items-center justify-center opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity pointer-events-none md:pointer-events-auto">
                         <button 
-                          onClick={(e) => { e.stopPropagation(); playSong(song); }}
+                          onClick={(e) => { e.stopPropagation(); playSongFromList(song, favorites); }}
                           className="w-10 h-10 md:w-12 md:h-12 rounded-full bg-cyan-600/90 md:bg-transparent md:bg-none md:hover:bg-cyan-600/50 text-white flex items-center justify-center shadow-lg md:shadow-none pointer-events-auto absolute bottom-2 right-2 md:static transition-all"
                         >
                           <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24" className="w-6 h-6 text-white translate-x-0.5">
@@ -1533,7 +1547,7 @@ export default function App() {
                                   <img src={song.thumbnailUrl} alt={song.title} className="w-full h-full object-cover" />
                                   <div className="absolute inset-0 bg-transparent md:bg-black/40 flex items-center justify-center opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity pointer-events-none md:pointer-events-auto">
                                     <button
-                                      onClick={(e) => { e.stopPropagation(); playSong(song); }}
+                                      onClick={(e) => { e.stopPropagation(); playSongFromList(song, currentPl.songs); }}
                                       className="w-8 h-8 md:w-10 md:h-10 rounded-full bg-cyan-600/90 md:bg-transparent md:bg-none md:hover:bg-cyan-600/50 text-white flex items-center justify-center shadow-lg md:shadow-none pointer-events-auto absolute bottom-2 right-2 md:static transition-all"
                                     >
                                       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5 text-white translate-x-0.5">
