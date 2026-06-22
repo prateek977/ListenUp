@@ -629,7 +629,12 @@ export default function App() {
   };
 
   function addToQueueSilent(song) {
-    setQueue(prev => [...prev, song]);
+    setQueue(prev => {
+      // Only add to queue if it's not already in there (e.g. from a direct search play)
+      // We don't want to keep appending the current song to the end every time it plays!
+      if (prev.some(s => s.id === song.id)) return prev;
+      return [...prev, song];
+    });
   };
 
   const appendToQueue = (song) => {
