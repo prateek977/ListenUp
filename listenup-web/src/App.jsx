@@ -629,20 +629,14 @@ export default function App() {
   };
 
   function addToQueueSilent(song) {
-    setQueue(prev => {
-      if (prev.some(s => s.id === song.id)) return prev;
-      return [...prev, song];
-    });
+    setQueue(prev => [...prev, song]);
   };
 
   const appendToQueue = (song) => {
     const { activeRoom: currentRoom, isHost: currentIsHost } = stateRef.current;
     if (currentRoom && !currentIsHost) return;
 
-    setQueue(prev => {
-      if (prev.some(s => s.id === song.id)) return prev;
-      return [...prev, song];
-    });
+    setQueue(prev => [...prev, song]);
   };
 
   const removeFromQueue = (songId) => {
