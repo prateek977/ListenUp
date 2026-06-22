@@ -1084,12 +1084,16 @@ export default function App() {
             {/* Curated Music Sections */}
             {homeLoading ? (
               <div className="space-y-8">
-                {['🔥 Top Trending', '🇮🇳 Bollywood Hits', '🇬🇧 Hollywood Pop'].map((title) => (
+                {['🔥 Top Trending', '🇮🇳 Bollywood Hits', '🇬🇧 Hollywood Pop'].map((title, si) => (
                   <div key={title} className="space-y-4">
-                    <div className="h-6 w-40 bg-slate-800 animate-pulse rounded-md"></div>
+                    <div className="skeleton-shimmer h-6 w-44" style={{animationDelay: `${si * 0.15}s`}}></div>
                     <div className="flex gap-4 overflow-x-hidden">
                       {[1, 2, 3, 4, 5].map((i) => (
-                        <div key={i} className="w-40 h-56 bg-slate-900 border border-slate-800 animate-pulse rounded-2xl flex-shrink-0"></div>
+                        <div key={i} className="w-40 flex-shrink-0 space-y-2" style={{animationDelay: `${(si * 5 + i) * 0.08}s`}}>
+                          <div className="skeleton-shimmer w-40 h-40 rounded-2xl"></div>
+                          <div className="skeleton-shimmer h-3 w-32 rounded-md"></div>
+                          <div className="skeleton-shimmer h-3 w-20 rounded-md"></div>
+                        </div>
                       ))}
                     </div>
                   </div>
@@ -1121,10 +1125,11 @@ export default function App() {
                           id={`scroll-${key}`}
                           className="flex overflow-x-auto gap-4 pb-4 scroll-smooth scrollbar-thin scrollbar-thumb-white/10 hover:scrollbar-thumb-white/20 hide-scrollbar"
                         >
-                          {songs.map((song) => (
+                          {songs.map((song, songIdx) => (
                           <div 
                             key={song.id} 
-                            className="w-40 flex-shrink-0 relative group p-3 rounded-2xl glass-card border border-[#222222] bg-[#141414] hover:bg-[#222222] transition-all flex flex-col"
+                            className="w-40 flex-shrink-0 relative group p-3 rounded-2xl glass-card border border-[#222222] bg-[#141414] hover:bg-[#222222] transition-all flex flex-col animate-card-in"
+                            style={{animationDelay: `${songIdx * 0.06}s`}}
                           >
                             <div className="relative aspect-square w-full rounded-xl overflow-hidden bg-slate-900 border border-slate-800">
                               <img src={song.thumbnailUrl} alt={song.title} className="w-full h-full object-cover" />
@@ -1237,9 +1242,16 @@ export default function App() {
               </h3>
               
               {searchLoading ? (
-                <div className="flex flex-col items-center justify-center py-20 gap-3">
-                  <div className="w-10 h-10 border-4 border-cyan-500 border-t-transparent rounded-full animate-spin"></div>
-                  <p className="text-slate-400 text-sm">Parsing YouTube stream feeds...</p>
+                <div className="flex flex-col items-center justify-center py-20 gap-5">
+                  <svg className="music-spinner-ring" width="48" height="48" viewBox="0 0 50 50">
+                    <circle cx="25" cy="25" r="20" fill="none" strokeWidth="4" strokeDasharray="1, 200" strokeDashoffset="0" />
+                  </svg>
+                  <div className="flex items-center gap-2">
+                    <span className="bounce-dot"></span>
+                    <span className="bounce-dot"></span>
+                    <span className="bounce-dot"></span>
+                  </div>
+                  <p className="text-slate-400 text-sm">Searching millions of songs...</p>
                 </div>
               ) : searchResults.length === 0 ? (
                 <div className="text-center py-20 bg-[#141414] rounded-2xl border border-slate-800">
@@ -1247,12 +1259,13 @@ export default function App() {
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
-                  {searchResults.map((song) => (
+                  {searchResults.map((song, idx) => (
                     <div 
                       key={song.id} 
-                      className={`glass-card p-3 rounded-2xl flex items-center gap-4 group ${
+                      className={`glass-card p-3 rounded-2xl flex items-center gap-4 group animate-card-in ${
                         currentSong?.id === song.id ? 'border-[#0d3f4a] bg-cyan-950' : ''
                       }`}
+                      style={{animationDelay: `${idx * 0.05}s`}}
                     >
                       <div className="w-14 h-14 rounded-xl overflow-hidden relative flex-shrink-0 bg-slate-900 border border-slate-800">
                         <img src={song.thumbnailUrl} alt={song.title} className="w-full h-full object-cover" />
