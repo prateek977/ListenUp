@@ -99,13 +99,13 @@ _browse_cache = {}
 _CACHE_TTL = 600  # 10 minutes
 
 BROWSE_CATEGORIES = {
-    "trending": "latest hit songs 2025 official music video",
-    "bollywood": "latest bollywood songs 2025 official video",
-    "hollywood": "popular english songs 2025 official video",
+    "trending": "latest hit songs official music video",
+    "bollywood": "latest bollywood songs official video",
+    "hollywood": "popular english songs official video",
     "lofi": "lofi chill single track",
-    "pop": "top pop songs 2025 official music video",
-    "romantic": "romantic songs 2025 official video",
-    "party": "party dance songs 2025 official video"
+    "pop": "top pop songs official music video",
+    "romantic": "romantic songs official video",
+    "party": "party dance songs official video"
 }
 
 @app.route('/api/browse', methods=['GET'])
