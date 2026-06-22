@@ -50,6 +50,7 @@ export default function App() {
       return saved ? JSON.parse(saved) : [];
     } catch { return []; }
   });
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [volume, setVolume] = useState(() => {
     const saved = localStorage.getItem('listenup_volume');
     return saved ? parseInt(saved, 10) : 100;
@@ -907,8 +908,16 @@ export default function App() {
       
       <div className="absolute bottom-[-10%] right-[-10%] w-[60%] h-[60%] bg-cyan-900 rounded-full blur-[140px] pointer-events-none"></div>
 
-      {/* Left Sidebar (Desktop Only) */}
-      <aside className={`hidden md:flex relative w-64 h-full glass-panel border-r border-slate-800 flex-col z-40 pb-20 md:pb-24 transition-transform duration-300`}>
+      {/* Mobile Sidebar Overlay */}
+      {isMobileMenuOpen && (
+        <div 
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 md:hidden transition-opacity"
+          onClick={() => setIsMobileMenuOpen(false)}
+        />
+      )}
+
+      {/* Left Sidebar */}
+      <aside className={`fixed md:relative inset-y-0 left-0 transform ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0 w-64 h-full glass-panel md:bg-transparent bg-[#0a0a0a] border-r border-slate-800 flex flex-col z-50 pb-20 md:pb-24 transition-transform duration-300`}>
         {/* App Branding */}
         <div className="p-6 flex items-center gap-3">
           <img src="/logo.png" alt="ListenUp Logo" className="h-10 w-auto object-contain drop-shadow-md" />
@@ -922,7 +931,7 @@ export default function App() {
         {/* Navigation Tabs */}
         <nav className="flex-1 px-4 py-2 space-y-1.5 overflow-y-auto custom-scrollbar">
           <button
-            onClick={() => setActiveTab('home')}
+            onClick={() => { setActiveTab('home'); setIsMobileMenuOpen(false); }}
             className={`w-full flex items-center gap-4 px-4 py-3 rounded-xl transition-all duration-200 ${
               activeTab === 'home'
                 ? 'bg-cyan-950 hover:bg-cyan-900 text-cyan-400 border border-cyan-800 shadow-md shadow-cyan-900/10'
@@ -936,7 +945,7 @@ export default function App() {
           </button>
 
           <button
-            onClick={() => setActiveTab('search')}
+            onClick={() => { setActiveTab('search'); setIsMobileMenuOpen(false); }}
             className={`w-full flex items-center gap-4 px-4 py-3 rounded-xl transition-all duration-200 ${
               activeTab === 'search'
                 ? 'bg-cyan-950 hover:bg-cyan-900 text-cyan-400 border border-cyan-800 shadow-md shadow-cyan-900/10'
@@ -950,7 +959,7 @@ export default function App() {
           </button>
 
           <button
-            onClick={() => setActiveTab('favorites')}
+            onClick={() => { setActiveTab('favorites'); setIsMobileMenuOpen(false); }}
             className={`w-full flex items-center gap-4 px-4 py-3 rounded-xl transition-all duration-200 ${
               activeTab === 'favorites'
                 ? 'bg-cyan-950 hover:bg-cyan-900 text-cyan-400 border border-cyan-800 shadow-md shadow-cyan-900/10'
@@ -1011,7 +1020,7 @@ export default function App() {
           </button>
 
           <button
-            onClick={() => setActiveTab('queue')}
+            onClick={() => { setActiveTab('queue'); setIsMobileMenuOpen(false); }}
             className={`w-full flex items-center gap-4 px-4 py-3 rounded-xl transition-all duration-200 ${
               activeTab === 'queue'
                 ? 'bg-cyan-950 hover:bg-cyan-900 text-cyan-400 border border-cyan-800 shadow-md shadow-cyan-900/10'
@@ -1078,6 +1087,14 @@ export default function App() {
         {/* Mobile Header */}
         <div className="md:hidden flex items-center justify-between mb-6">
           <div className="flex items-center gap-2">
+            <button 
+              onClick={() => setIsMobileMenuOpen(true)}
+              className="p-2 -ml-2 text-slate-300 hover:text-white"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-6 h-6">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
+              </svg>
+            </button>
             <img src="/logo.png" alt="ListenUp Logo" className="h-6 w-auto object-contain drop-shadow-md" />
             <h1 className="text-lg font-extrabold text-white tracking-wider bg-gradient-to-r from-cyan-400 via-pink-400 to-cyan-400 bg-clip-text text-transparent">
               ListenUp
@@ -2327,7 +2344,7 @@ export default function App() {
         </button>
 
         <button
-          onClick={() => setActiveTab('playlists')}
+          onClick={() => { setActiveTab('playlists'); setIsMobileMenuOpen(false); }}
           className={`flex flex-col items-center justify-center gap-1 w-full h-full ${activeTab === 'playlists' ? 'text-white' : 'text-slate-400 hover:text-slate-200'}`}
         >
           {activeTab === 'playlists' ? (
