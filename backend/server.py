@@ -53,8 +53,8 @@ def search():
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Query up to 30 results to account for filtered items
-            info = ydl.extract_info(f"ytsearch30:{query}", download=False)
+            # Query up to 50 results to account for filtered items
+            info = ydl.extract_info(f"ytsearch50:{query}", download=False)
             entries = info.get('entries', [])
             
             results = []
@@ -85,8 +85,8 @@ def search():
                     "viewCount": entry.get('view_count') or 0
                 })
                 
-            # Return max 15 results
-            results = results[:15]
+            # Return max 20 results
+            results = results[:20]
             logger.info(f"Found {len(results)} search results for query: {query}")
             return jsonify(results)
     except Exception as e:
@@ -99,13 +99,13 @@ _browse_cache = {}
 _CACHE_TTL = 600  # 10 minutes
 
 BROWSE_CATEGORIES = {
-    "trending": "top trending songs 2025",
-    "bollywood": "latest bollywood hit songs 2025",
-    "hollywood": "top hollywood pop songs 2025",
-    "lofi": "lofi hip hop chill beats",
-    "pop": "top pop songs 2025 playlist",
-    "romantic": "best romantic songs hindi 2025",
-    "party": "party songs bollywood 2025 dance"
+    "trending": "latest hit songs 2025 official music video",
+    "bollywood": "latest bollywood songs 2025 official video",
+    "hollywood": "popular english songs 2025 official video",
+    "lofi": "lofi chill single track",
+    "pop": "top pop songs 2025 official music video",
+    "romantic": "romantic songs 2025 official video",
+    "party": "party dance songs 2025 official video"
 }
 
 @app.route('/api/browse', methods=['GET'])
@@ -136,8 +136,8 @@ def browse():
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Query 30 results to account for filtered mashups
-            info = ydl.extract_info(f"ytsearch30:{query}", download=False)
+            # Query 50 results to account for filtered mashups
+            info = ydl.extract_info(f"ytsearch50:{query}", download=False)
             entries = info.get('entries', [])
             
             results = []
@@ -166,8 +166,8 @@ def browse():
                     "viewCount": entry.get('view_count') or 0
                 })
             
-            # Limit to 15 results and cache
-            results = results[:15]
+            # Limit to 20 results and cache
+            results = results[:20]
             _browse_cache[cache_key] = (results, now)
             logger.info(f"Browse '{category}': found {len(results)} results")
             return jsonify(results)
