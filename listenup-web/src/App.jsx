@@ -15,6 +15,7 @@ export default function App() {
   const [originalQueue, setOriginalQueue] = useState([]); // for restoring from shuffle
   const [currentSong, setCurrentSong] = useState(null);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isBuffering, setIsBuffering] = useState(false);
   
   // Curated Categories State
   const [homeData, setHomeData] = useState({
@@ -427,6 +428,7 @@ export default function App() {
 
     if (state === 1) { // PLAYING
       isLoadingSongRef.current = false;
+      setIsBuffering(false);
       if (!inRoomAsListener) {
         setIsPlaying(true);
       }
@@ -459,6 +461,8 @@ export default function App() {
       } else {
         playNext();
       }
+    } else if (state === 3) { // BUFFERING
+      setIsBuffering(true);
     }
   };
 
@@ -470,6 +474,7 @@ export default function App() {
 
     if (currentSong && isPlayerReady && playerRef.current && playerRef.current.loadVideoById) {
       isLoadingSongRef.current = true;
+      setIsBuffering(true);
       setCurrentTime(0);
       setDuration(0);
       
@@ -601,6 +606,8 @@ export default function App() {
       return;
     }
     setCurrentSong(song);
+    setIsBuffering(true);
+    
     const index = queue.findIndex(s => s.id === song.id);
     if (index === -1) {
       const currentIdx = queue.findIndex(s => s.id === currentSong?.id);
@@ -626,6 +633,7 @@ export default function App() {
     const newQueue = songIdx !== -1 ? allSongs.slice(songIdx) : [song, ...allSongs.filter(s => s.id !== song.id)];
     setQueue(newQueue);
     setCurrentSong(song);
+    setIsBuffering(true);
   };
 
   function addToQueueSilent(song) {
@@ -2165,7 +2173,9 @@ export default function App() {
               className="w-9 h-9 md:w-11 md:h-11 rounded-full bg-white text-black flex items-center justify-center shadow-lg active:scale-95 transition-transform disabled:opacity-50 disabled:pointer-events-none hover:bg-slate-100 flex-shrink-0"
               title={isPlaying ? 'Pause' : 'Play'} aria-label={isPlaying ? 'Pause' : 'Play'}
             >
-              {isPlaying ? (
+              {isBuffering ? (
+                <div className="w-5 h-5 border-2 border-black/20 border-t-black rounded-full animate-spin"></div>
+              ) : isPlaying ? (
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
                   <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
                 </svg>
