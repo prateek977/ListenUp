@@ -50,7 +50,6 @@ export default function App() {
       return saved ? JSON.parse(saved) : [];
     } catch { return []; }
   });
-  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [volume, setVolume] = useState(() => {
     const saved = localStorage.getItem('listenup_volume');
     return saved ? parseInt(saved, 10) : 100;
