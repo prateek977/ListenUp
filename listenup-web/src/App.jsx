@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { io } from 'socket.io-client';
+import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
 import { BackgroundMode } from '@anuradev/capacitor-background-mode';
 import { Capacitor } from '@capacitor/core';
 
@@ -37,7 +38,7 @@ export default function App() {
   });
   const [activePlaylistId, setActivePlaylistId] = useState(null);
   const [newPlaylistName, setNewPlaylistName] = useState('');
-  const [activeDropdownSong, setActiveDropdownSong] = useState(null);
+  const [contextMenu, setContextMenu] = useState({ isOpen: false, song: null });
   const [isPlayerReady, setIsPlayerReady] = useState(false);
 
   // Playback State
@@ -124,19 +125,6 @@ export default function App() {
       if (timerRef.current) clearInterval(timerRef.current);
     };
   }, []);
-
-  // Listen to document clicks to close playlist dropdowns on click-away
-  useEffect(() => {
-    const handleOutsideClick = (e) => {
-      if (activeDropdownSong) {
-        if (!e.target.closest('.playlist-dropdown-trigger') && !e.target.closest('.playlist-dropdown-menu')) {
-          setActiveDropdownSong(null);
-        }
-      }
-    };
-    document.addEventListener('click', handleOutsideClick);
-    return () => document.removeEventListener('click', handleOutsideClick);
-  }, [activeDropdownSong]);
 
   // Handle Safari closedby backdrop fallback for `<dialog>`
   useEffect(() => {
@@ -792,7 +780,6 @@ export default function App() {
       if (pl.songs.some(s => s.id === song.id)) return pl;
       return { ...pl, songs: [...pl.songs, song] };
     }));
-    setActiveDropdownSong(null);
   };
 
   const removeSongFromPlaylist = (playlistId, songId) => {
@@ -880,91 +867,14 @@ export default function App() {
     return `${m}:${s < 10 ? '0' : ''}${s}`;
   };
 
-  // Dropdown helper function for playlists
-  const renderPlaylistDropdown = (song, direction = 'down') => {
-    const isOpen = activeDropdownSong?.id === song.id;
-    return (
-      <div className="relative">
-
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setActiveDropdownSong(isOpen ? null : song);
-              }}
-              className="playlist-dropdown-trigger p-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-[#222222] transition-colors animate-fade-in"
-              title="Add to Playlist"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-5 h-5">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-              </svg>
-            </button>
-            
-            {isOpen && (
-              <div className={`playlist-dropdown-menu absolute right-0 w-48 bg-[#141121] border border-slate-800 rounded-xl shadow-2xl z-50 py-1.5 text-left ${
-                direction === 'up' ? 'bottom-full mb-1.5' : 'top-full mt-1.5'
-              }`}>
-                <div className="px-3 py-1 text-[10px] text-slate-500 uppercase tracking-widest font-bold border-b border-slate-800 mb-1">
-                  Add to Playlist
-                </div>
-                {playlists.length === 0 ? (
-                  <div className="px-3 py-2 text-xs text-slate-400 italic">No playlists created</div>
-                ) : (
-                  <div className="max-h-40 overflow-y-auto">
-                    {playlists.map((pl) => (
-                      <button
-                        key={pl.id}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          addSongToPlaylist(pl.id, song);
-                        }}
-                        className="w-full text-left px-3 py-1.5 text-xs text-slate-300 hover:text-white hover:bg-[#0a2e36] transition-colors truncate"
-                      >
-                        {pl.name}
-                      </button>
-                    ))}
-                  </div>
-                )}
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setActiveDropdownSong(null);
-                  }}
-                  className="w-full text-left px-3 py-2 text-xs text-slate-500 hover:text-slate-300 transition-colors border-t border-slate-800 mt-1"
-                >
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    appendToQueue(song);
-                    setActiveDropdownSong(null);
-                  }}
-                  className="w-full text-left px-3 py-2 text-xs text-slate-300 hover:text-white hover:bg-[#222222] transition-colors border-t border-slate-800 mt-1"
-                >
-                  Add to Queue
-                </button>
-                  Cancel
-                </button>
-              </div>
-            )}
-      </div>
-    );
-  };
-
   return (
     <div className="flex h-[100dvh] w-screen bg-black text-slate-200 overflow-hidden relative font-sans">
       
       
       <div className="absolute bottom-[-10%] right-[-10%] w-[60%] h-[60%] bg-cyan-900 rounded-full blur-[140px] pointer-events-none"></div>
 
-      {/* Mobile Menu Backdrop */}
-      {isMobileMenuOpen && (
-        <div 
-          className="fixed inset-0 bg-black/60 z-30 md:hidden backdrop-blur-sm"
-          onClick={() => setIsMobileMenuOpen(false)}
-        />
-      )}
-
-      {/* Left Sidebar */}
-      <aside className={`fixed md:relative w-64 h-full glass-panel border-r border-slate-800 flex flex-col z-40 pb-20 md:pb-24 transition-transform duration-300 ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
+      {/* Left Sidebar (Desktop Only) */}
+      <aside className={`hidden md:flex relative w-64 h-full glass-panel border-r border-slate-800 flex-col z-40 pb-20 md:pb-24 transition-transform duration-300`}>
         {/* App Branding */}
         <div className="p-6 flex items-center gap-3">
           <img src="/logo.png" alt="ListenUp Logo" className="h-10 w-auto object-contain drop-shadow-md" />
@@ -1077,7 +987,7 @@ export default function App() {
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-5 h-5">
               <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 010 3.75H5.625a1.875 1.875 0 010-3.75z" />
             </svg>
-            <span className="font-semibold text-sm">Play Queue</span>
+            <span className="font-semibold text-sm">Queue</span>
             {queue.length > 0 && (
               <span className="ml-auto bg-[#0a2e36] text-cyan-400 text-xs px-2 py-0.5 rounded-full font-bold border border-[#0d3f4a]">
                 {queue.length}
@@ -1138,27 +1048,6 @@ export default function App() {
             <h1 className="text-lg font-extrabold text-white tracking-wider bg-gradient-to-r from-cyan-400 via-pink-400 to-cyan-400 bg-clip-text text-transparent">
               ListenUp
             </h1>
-          </div>
-          
-          <div className="flex items-center gap-2">
-            <button 
-              onClick={() => setActiveTab('search')}
-              className="p-2 text-slate-300 hover:text-white focus:outline-none"
-              title="Search"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor" className="w-5 h-5">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
-              </svg>
-            </button>
-            <button 
-              onClick={() => setIsMobileMenuOpen(true)}
-              className="p-2 -mr-2 text-slate-300 hover:text-white focus:outline-none"
-              title="Menu"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-6 h-6">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
-              </svg>
-            </button>
           </div>
         </div>
 
@@ -1260,7 +1149,17 @@ export default function App() {
                                 </svg>
                               </button>
 
-                              {renderPlaylistDropdown(song, 'up')}
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setContextMenu({ isOpen: true, song });
+                                }}
+                                className="p-1 rounded hover:bg-[#222222] transition-colors text-slate-500 hover:text-slate-300"
+                              >
+                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4">
+                                  <path d="M12 13a1.5 1.5 0 100-3 1.5 1.5 0 000 3zM12 6a1.5 1.5 0 100-3 1.5 1.5 0 000 3zM12 20a1.5 1.5 0 100-3 1.5 1.5 0 000 3z" />
+                                </svg>
+                              </button>
                             </div>
                           </div>
                         ))}
@@ -1377,7 +1276,17 @@ export default function App() {
                           </svg>
                         </button>
 
-                        {renderPlaylistDropdown(song, 'down')}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setContextMenu({ isOpen: true, song });
+                          }}
+                          className="p-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-[#222222] transition-colors"
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
+                            <path d="M12 13a1.5 1.5 0 100-3 1.5 1.5 0 000 3zM12 6a1.5 1.5 0 100-3 1.5 1.5 0 000 3zM12 20a1.5 1.5 0 100-3 1.5 1.5 0 000 3z" />
+                          </svg>
+                        </button>
                       </div>
                     </div>
                   ))}
@@ -1445,7 +1354,17 @@ export default function App() {
                         </svg>
                       </button>
 
-                      {renderPlaylistDropdown(song, 'down')}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setContextMenu({ isOpen: true, song });
+                        }}
+                        className="p-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-[#222222] transition-colors"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
+                          <path d="M12 13a1.5 1.5 0 100-3 1.5 1.5 0 000 3zM12 6a1.5 1.5 0 100-3 1.5 1.5 0 000 3zM12 20a1.5 1.5 0 100-3 1.5 1.5 0 000 3z" />
+                        </svg>
+                      </button>
                     </div>
                   </div>
                 ))}
@@ -1637,21 +1556,11 @@ export default function App() {
 
                                 <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
                                   <button
-                                    onClick={() => appendToQueue(song)}
+                                    onClick={() => setContextMenu({ isOpen: true, song })}
                                     className="p-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-[#222222] transition-colors"
-                                    title="Add to Queue"
                                   >
-                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-4.5 h-4.5">
-                                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-                                    </svg>
-                                  </button>
-                                  <button
-                                    onClick={() => removeSongFromPlaylist(currentPl.id, song.id)}
-                                    className="p-2 rounded-lg text-slate-400 hover:text-red-400 hover:bg-[#2a0e10] transition-colors"
-                                    title="Remove from Playlist"
-                                  >
-                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-4.5 h-4.5">
-                                      <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
+                                      <path d="M12 13a1.5 1.5 0 100-3 1.5 1.5 0 000 3zM12 6a1.5 1.5 0 100-3 1.5 1.5 0 000 3zM12 20a1.5 1.5 0 100-3 1.5 1.5 0 000 3z" />
                                     </svg>
                                   </button>
                                 </div>
@@ -1959,24 +1868,43 @@ export default function App() {
         )}
 
         {/* Active View: QUEUE */}
-        {activeTab === 'queue' && (
+        {activeTab === 'queue' && (() => {
+          const currentIdx = queue.findIndex(s => s.id === currentSong?.id);
+          const upcomingSongs = currentIdx !== -1 ? queue.slice(currentIdx + 1) : (queue.length > 0 && !currentSong ? queue : []);
+          const historySongs = currentIdx > 0 ? queue.slice(0, currentIdx).reverse() : [];
+
+          const onDragEnd = (result) => {
+            if (!result.destination) return;
+            const srcIndex = result.source.index;
+            const destIndex = result.destination.index;
+            if (srcIndex === destIndex) return;
+
+            // Map from "upcomingSongs" indices back to real queue indices
+            const upcomingStartIdx = currentIdx + 1;
+            const newQueue = [...queue];
+            const [removed] = newQueue.splice(upcomingStartIdx + srcIndex, 1);
+            newQueue.splice(upcomingStartIdx + destIndex, 0, removed);
+            setQueue(newQueue);
+          };
+
+          return (
           <div className="flex flex-col gap-6 max-w-5xl mx-auto w-full">
             <div className="flex justify-between items-end">
               <div>
-                <h2 className="text-3xl font-extrabold text-white text-glow-cyan">Play Queue</h2>
-                <p className="text-slate-400 text-sm mt-1">Manage tracks queued up for sequential playback.</p>
+                <h2 className="text-3xl font-extrabold text-white text-glow-cyan">Queue</h2>
+                <p className="text-slate-400 text-sm mt-1">Manage your upcoming tracks and view history.</p>
               </div>
               {queue.length > 0 && (
                 <button
                   onClick={clearQueue}
                   className="px-4 py-2 text-xs font-semibold text-white bg-cyan-600 hover:bg-cyan-500 rounded-xl transition-all active:scale-[0.98]"
                 >
-                  Clear Queue
+                  Clear All
                 </button>
               )}
             </div>
 
-            {/* Currently Playing Card inside Queue */}
+            {/* Currently Playing Card */}
             {currentSong && (
               <div className="bg-gradient-to-r from-cyan-950 to-cyan-950 border border-cyan-900/30 p-5 rounded-3xl flex items-center gap-5 relative">
                 <div className="absolute top-4 right-5 flex items-center gap-0.5">
@@ -2006,78 +1934,126 @@ export default function App() {
               </div>
             )}
 
-            {/* Queue List */}
+            {/* Up Next (Draggable) */}
             <div>
               <h3 className="text-lg font-bold text-white tracking-wide mb-3">Up Next</h3>
-              {queue.length === 0 ? (
-                <div className="text-center py-20 bg-[#141414] rounded-2xl border border-slate-800">
-                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="w-12 h-12 text-slate-500 mx-auto mb-3">
+              {upcomingSongs.length === 0 ? (
+                <div className="text-center py-12 bg-[#141414] rounded-2xl border border-slate-800">
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="w-10 h-10 text-slate-500 mx-auto mb-3">
                     <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 010 3.75H5.625a1.875 1.875 0 010-3.75z" />
                   </svg>
-                  <h4 className="text-white font-bold mb-1">Queue is empty</h4>
-                  <p className="text-slate-400 text-sm">Songs you play or add will appear here.</p>
+                  <h4 className="text-white font-bold mb-1">No upcoming tracks</h4>
+                  <p className="text-slate-400 text-sm">Songs queued after the current track will appear here.</p>
                 </div>
               ) : (
-                <div className="space-y-2">
-                  {queue.map((song, index) => {
-                    const isPlayingCurrent = currentSong?.id === song.id;
-                    return (
-                      <div 
-                        key={`${song.id}-${index}`}
-                        className={`flex items-center gap-4 p-3 rounded-2xl glass-card relative group ${
-                          isPlayingCurrent ? 'border-cyan-500/20 bg-cyan-950' : ''
-                        }`}
-                      >
-                        <span className="text-xs text-slate-500 font-bold w-4 text-center">
-                          {index + 1}
-                        </span>
+                <DragDropContext onDragEnd={onDragEnd}>
+                  <Droppable droppableId="queue-upcoming">
+                    {(provided) => (
+                      <div ref={provided.innerRef} {...provided.droppableProps} className="space-y-2">
+                        {upcomingSongs.map((song, index) => (
+                          <Draggable key={song.id} draggableId={`queue-${song.id}`} index={index}>
+                            {(provided, snapshot) => (
+                              <div
+                                ref={provided.innerRef}
+                                {...provided.draggableProps}
+                                className={`flex items-center gap-3 p-3 rounded-2xl glass-card relative group transition-shadow ${
+                                  snapshot.isDragging ? 'shadow-2xl shadow-cyan-500/20 ring-1 ring-cyan-500/30 bg-[#1a1a1a]' : ''
+                                }`}
+                              >
+                                {/* Drag Handle */}
+                                <div {...provided.dragHandleProps} className="cursor-grab active:cursor-grabbing text-slate-600 hover:text-slate-400 touch-manipulation px-1">
+                                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-5 h-5">
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
+                                  </svg>
+                                </div>
 
-                        <div className="w-11 h-11 rounded-lg overflow-hidden relative flex-shrink-0 bg-slate-900">
-                          <img src={song.thumbnailUrl} alt={song.title} className="w-full h-full object-cover" />
-                          <div className="absolute inset-0 bg-transparent md:bg-black/40 flex items-center justify-center opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity pointer-events-none md:pointer-events-auto">
-                            <button
-                              onClick={(e) => { e.stopPropagation(); playSong(song); }}
-                              className="w-8 h-8 md:w-10 md:h-10 rounded-full bg-cyan-600/90 md:bg-transparent md:bg-none md:hover:bg-cyan-600/50 text-white flex items-center justify-center shadow-lg md:shadow-none pointer-events-auto absolute bottom-1 right-1 md:static transition-all"
-                            >
-                              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5 text-white translate-x-0.5">
-                                <path d="M8 5v14l11-7z" />
-                              </svg>
-                            </button>
-                          </div>
-                        </div>
+                                <span className="text-xs text-slate-500 font-bold w-4 text-center">
+                                  {index + 1}
+                                </span>
 
-                        <div className="flex-1 min-w-0">
-                          <h4 className={`text-sm font-semibold truncate ${isPlayingCurrent ? 'text-cyan-400' : 'text-white'}`}>
-                            {song.title}
-                          </h4>
-                          <p className="text-xs text-slate-400 truncate mt-0.5">{song.artist}</p>
-                        </div>
+                                <div className="w-11 h-11 rounded-lg overflow-hidden relative flex-shrink-0 bg-slate-900">
+                                  <img src={song.thumbnailUrl} alt={song.title} className="w-full h-full object-cover" />
+                                </div>
 
-                        <span className="text-xs text-slate-500 font-medium">
-                          {formatTime(song.duration)}
-                        </span>
+                                <div className="flex-1 min-w-0">
+                                  <h4 className="text-sm font-semibold truncate text-white">{song.title}</h4>
+                                  <p className="text-xs text-slate-400 truncate mt-0.5">{song.artist}</p>
+                                </div>
 
-                        <button
-                          onClick={() => removeFromQueue(song.id)}
-                          className="p-1.5 rounded-lg text-slate-400 hover:text-red-400 hover:bg-[#2a0e10] opacity-0 group-hover:opacity-100 transition-all"
-                          title="Remove from Queue"
-                        >
-                          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-4 h-4">
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                          </svg>
-                        </button>
+                                <span className="text-xs text-slate-500 font-medium hidden md:inline">
+                                  {formatTime(song.duration)}
+                                </span>
+
+                                <button
+                                  onClick={() => removeFromQueue(song.id)}
+                                  className="p-1.5 rounded-lg text-slate-400 hover:text-red-400 hover:bg-[#2a0e10] opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-all"
+                                  title="Remove from Queue"
+                                >
+                                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-4 h-4">
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                                  </svg>
+                                </button>
+                              </div>
+                            )}
+                          </Draggable>
+                        ))}
+                        {provided.placeholder}
                       </div>
-                    );
-                  })}
-                </div>
+                    )}
+                  </Droppable>
+                </DragDropContext>
               )}
             </div>
+
+            {/* Recently Played (History) */}
+            {historySongs.length > 0 && (
+              <div>
+                <h3 className="text-lg font-bold text-slate-400 tracking-wide mb-3 flex items-center gap-2">
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-5 h-5">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  Recently Played
+                </h3>
+                <div className="space-y-2 opacity-60">
+                  {historySongs.map((song, index) => (
+                    <div
+                      key={`history-${song.id}-${index}`}
+                      className="flex items-center gap-3 p-3 rounded-2xl glass-card relative group"
+                    >
+                      <div className="w-11 h-11 rounded-lg overflow-hidden relative flex-shrink-0 bg-slate-900">
+                        <img src={song.thumbnailUrl} alt={song.title} className="w-full h-full object-cover" />
+                        <div className="absolute inset-0 bg-transparent md:bg-black/40 flex items-center justify-center opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity pointer-events-none md:pointer-events-auto">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); playSong(song); }}
+                            className="w-8 h-8 md:w-10 md:h-10 rounded-full bg-cyan-600/90 md:bg-transparent md:bg-none md:hover:bg-cyan-600/50 text-white flex items-center justify-center shadow-lg md:shadow-none pointer-events-auto absolute bottom-1 right-1 md:static transition-all"
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5 text-white translate-x-0.5">
+                              <path d="M8 5v14l11-7z" />
+                            </svg>
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="flex-1 min-w-0">
+                        <h4 className="text-sm font-semibold truncate text-slate-300">{song.title}</h4>
+                        <p className="text-xs text-slate-500 truncate mt-0.5">{song.artist}</p>
+                      </div>
+
+                      <span className="text-xs text-slate-600 font-medium hidden md:inline">
+                        {formatTime(song.duration)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
-        )}
+          );
+        })()}
       </main>
 
       {/* Sticky Bottom Media Control Bar */}
-      <footer className="h-20 md:h-24 w-full glass-panel border-t border-slate-800 fixed bottom-0 left-0 right-0 z-50 flex items-center justify-between px-2 md:px-6 pb-[env(safe-area-inset-bottom)]">
+      <footer className="h-[72px] md:h-24 w-full bg-[#1e1e1e]/95 md:glass-panel border-t md:border-t-slate-800 fixed md:bottom-0 left-0 right-0 z-40 flex items-center justify-between px-2 md:px-6 md:pb-[env(safe-area-inset-bottom)] bottom-[calc(4rem+env(safe-area-inset-bottom))] border-[#2a2a2a] md:border-transparent rounded-xl md:rounded-none m-2 md:m-0 w-[calc(100%-16px)] md:w-full drop-shadow-2xl md:drop-shadow-none">
         
         {/* Left: Active Song details */}
         <div className="w-[35%] md:w-1/4 flex items-center gap-2 md:gap-3">
@@ -2266,6 +2242,75 @@ export default function App() {
 
       </footer>
 
+      {/* Mobile Bottom Navigation Bar (Spotify Style) */}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 h-16 bg-[#0a0a0a] border-t border-[#1a1a1a] flex justify-around items-center px-2 pb-[env(safe-area-inset-bottom)] z-50">
+        <button
+          onClick={() => setActiveTab('home')}
+          className={`flex flex-col items-center justify-center gap-1 w-full h-full ${activeTab === 'home' ? 'text-white' : 'text-slate-400 hover:text-slate-200'}`}
+        >
+          {activeTab === 'home' ? (
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6">
+              <path d="M11.47 3.84a.75.75 0 011.06 0l8.99 9a.75.75 0 11-1.06 1.06l-4.62-4.62V21a.75.75 0 01-.75.75H8.91a.75.75 0 01-.75-.75V9.28L3.53 13.9a.75.75 0 01-1.06-1.06l9-9zM12 5.64l-6.26 6.26v8.35h12.52v-8.35L12 5.64z" />
+              <path d="M12 4.25L3 13h2v7h5v-5h4v5h5v-7h2L12 4.25z" />
+            </svg>
+          ) : (
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-6 h-6">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12l8.954-8.955c.44-.439 1.152-.439 1.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 21h8.25" />
+            </svg>
+          )}
+          <span className="text-[10px] font-medium">Home</span>
+        </button>
+        
+        <button
+          onClick={() => setActiveTab('search')}
+          className={`flex flex-col items-center justify-center gap-1 w-full h-full ${activeTab === 'search' ? 'text-white' : 'text-slate-400 hover:text-slate-200'}`}
+        >
+          {activeTab === 'search' ? (
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6">
+              <path fillRule="evenodd" d="M10.5 3.75a6.75 6.75 0 100 13.5 6.75 6.75 0 000-13.5zM2.25 10.5a8.25 8.25 0 1114.59 5.28l4.69 4.69a.75.75 0 11-1.06 1.06l-4.69-4.69A8.25 8.25 0 012.25 10.5z" clipRule="evenodd" />
+            </svg>
+          ) : (
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-6 h-6">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+            </svg>
+          )}
+          <span className="text-[10px] font-medium">Search</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('playlists')}
+          className={`flex flex-col items-center justify-center gap-1 w-full h-full ${activeTab === 'playlists' ? 'text-white' : 'text-slate-400 hover:text-slate-200'}`}
+        >
+          {activeTab === 'playlists' ? (
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6">
+              <path fillRule="evenodd" d="M3 4.25A2.25 2.25 0 015.25 2h13.5A2.25 2.25 0 0121 4.25v15.5A2.25 2.25 0 0118.75 22H5.25A2.25 2.25 0 013 19.75V4.25zM5.25 3.5a.75.75 0 00-.75.75v15.5c0 .414.336.75.75.75h13.5a.75.75 0 00.75-.75V4.25a.75.75 0 00-.75-.75H5.25z" clipRule="evenodd" />
+              <path d="M7 8h10v1.5H7V8zm0 3h10v1.5H7V11zm0 3h10v1.5H7V14z" />
+            </svg>
+          ) : (
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-6 h-6">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 10.5v11.25m0-11.25a9 9 0 1118 0v11.25m-18 0a9 9 0 0018 0M3.75 13.5h16.5M5.625 4.5h12.75a1.875 1.875 0 010 3.75H5.625a1.875 1.875 0 010-3.75z" />
+            </svg>
+          )}
+          <span className="text-[10px] font-medium">Your Library</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('queue')}
+          className={`flex flex-col items-center justify-center gap-1 w-full h-full ${activeTab === 'queue' ? 'text-white' : 'text-slate-400 hover:text-slate-200'}`}
+        >
+          {activeTab === 'queue' ? (
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6">
+              <path d="M4.5 6a.75.75 0 01.75-.75h13.5a.75.75 0 010 1.5H5.25A.75.75 0 014.5 6zM4.5 12a.75.75 0 01.75-.75h13.5a.75.75 0 010 1.5H5.25A.75.75 0 014.5 12zM4.5 18a.75.75 0 01.75-.75h13.5a.75.75 0 010 1.5H5.25A.75.75 0 014.5 18z" />
+            </svg>
+          ) : (
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-6 h-6">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 010 3.75H5.625a1.875 1.875 0 010-3.75z" />
+            </svg>
+          )}
+          <span className="text-[10px] font-medium">Queue</span>
+        </button>
+      </nav>
+
       {/* Native Playlist Creation Modal Dialog */}
       <dialog
         ref={createPlaylistDialogRef}
@@ -2300,6 +2345,110 @@ export default function App() {
           </div>
         </form>
       </dialog>
+
+      {/* Global Context Menu (Spotify Style Bottom Sheet) */}
+      {contextMenu.isOpen && contextMenu.song && (
+        <div className="fixed inset-0 z-[100] flex items-end md:items-center justify-center pointer-events-auto">
+          {/* Backdrop */}
+          <div 
+            className="absolute inset-0 bg-black/70 backdrop-blur-sm transition-opacity" 
+            onClick={() => setContextMenu({ isOpen: false, song: null })}
+          ></div>
+          
+          {/* Modal Content - Bottom Sheet on mobile, centered modal on desktop */}
+          <div className="relative w-full md:max-w-sm bg-[#181818] rounded-t-3xl md:rounded-3xl shadow-2xl overflow-hidden animate-slide-up pb-[env(safe-area-inset-bottom)]">
+            
+            {/* Header: Song Info */}
+            <div className="p-4 border-b border-[#2a2a2a] flex items-center gap-4 bg-[#222]">
+              <img src={contextMenu.song.thumbnailUrl} alt={contextMenu.song.title} className="w-14 h-14 rounded-lg object-cover shadow-md" />
+              <div className="flex-1 min-w-0">
+                <h3 className="text-white font-bold truncate text-base">{contextMenu.song.title}</h3>
+                <p className="text-slate-400 text-sm truncate">{contextMenu.song.artist}</p>
+              </div>
+            </div>
+
+            {/* Actions List */}
+            <div className="py-2 flex flex-col">
+              <button 
+                onClick={() => {
+                  navigator.clipboard.writeText(`https://listenup-web.vercel.app/search?q=${encodeURIComponent(contextMenu.song.title)}`);
+                  setContextMenu({ isOpen: false, song: null });
+                }}
+                className="w-full text-left px-5 py-4 text-slate-300 hover:text-white hover:bg-[#2a2a2a] transition-colors flex items-center gap-4"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-6 h-6 text-slate-400">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M7.217 10.907a2.25 2.25 0 100 2.186m0-2.186c.18.324.283.696.283 1.093s-.103.77-.283 1.093m0-2.186l9.566-5.314m-9.566 7.5l9.566 5.314m0 0a2.25 2.25 0 103.935 2.186 2.25 2.25 0 00-3.935-2.186zm0-12.814a2.25 2.25 0 103.933-2.185 2.25 2.25 0 00-3.933 2.185z" />
+                </svg>
+                <span className="font-medium text-base">Share</span>
+              </button>
+              
+              <button 
+                onClick={() => {
+                  toggleFavorite(contextMenu.song);
+                  setContextMenu({ isOpen: false, song: null });
+                }}
+                className="w-full text-left px-5 py-4 text-slate-300 hover:text-white hover:bg-[#2a2a2a] transition-colors flex items-center gap-4"
+              >
+                {favorites.some(s => s.id === contextMenu.song.id) ? (
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6 text-pink-500">
+                    <path d="M11.645 20.91l-.007-.003-.022-.012a15.247 15.247 0 01-.383-.218 25.18 25.18 0 01-4.244-3.17C4.688 15.36 2.25 12.174 2.25 8.25 2.25 5.322 4.714 3 7.688 3A5.5 5.5 0 0112 5.052 5.5 5.5 0 0116.313 3c2.973 0 5.437 2.322 5.437 5.25 0 3.925-2.438 7.111-4.739 9.256a25.175 25.175 0 01-4.244 3.17 15.247 15.247 0 01-.383.219l-.022.012-.007.004-.003.001a.752.752 0 01-.704 0l-.003-.001z" />
+                  </svg>
+                ) : (
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-6 h-6 text-slate-400">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12z" />
+                  </svg>
+                )}
+                <span className="font-medium text-base">Add to Favorites</span>
+              </button>
+
+              <button 
+                onClick={() => {
+                  appendToQueue(contextMenu.song);
+                  setContextMenu({ isOpen: false, song: null });
+                }}
+                className="w-full text-left px-5 py-4 text-slate-300 hover:text-white hover:bg-[#2a2a2a] transition-colors flex items-center gap-4"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-6 h-6 text-slate-400">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 010 3.75H5.625a1.875 1.875 0 010-3.75z" />
+                </svg>
+                <span className="font-medium text-base">Add to Queue</span>
+              </button>
+              
+              <div className="mt-2 pt-2 border-t border-[#2a2a2a]">
+                <div className="px-5 py-2 text-xs font-bold text-slate-500 uppercase tracking-widest">Add to Playlist</div>
+                {playlists.length === 0 ? (
+                  <div className="px-5 py-4 text-sm text-slate-500 italic">No playlists created. Go to Library to create one!</div>
+                ) : (
+                  <div className="max-h-48 overflow-y-auto">
+                    {playlists.map((pl) => (
+                      <button 
+                        key={pl.id}
+                        onClick={() => {
+                          addSongToPlaylist(pl.id, contextMenu.song);
+                          setContextMenu({ isOpen: false, song: null });
+                        }}
+                        className="w-full text-left px-5 py-3 text-slate-300 hover:text-white hover:bg-[#2a2a2a] transition-colors flex items-center gap-4"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-6 h-6 text-slate-400">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M9 19.5h12m-12-3h12m-12-3h12m-12-3h12M5.625 19.5a1.875 1.875 0 11-3.75 0 1.875 1.875 0 013.75 0zm0-7.5a1.875 1.875 0 11-3.75 0 1.875 1.875 0 013.75 0zm0-7.5a1.875 1.875 0 11-3.75 0 1.875 1.875 0 013.75 0z" />
+                        </svg>
+                        <span className="font-medium text-base truncate">{pl.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              
+              <button 
+                onClick={() => setContextMenu({ isOpen: false, song: null })}
+                className="w-full mt-2 py-4 text-center font-bold text-slate-400 hover:text-white border-t border-[#2a2a2a]"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Song Request Notifications (Host Only) */}
       {pendingSongRequests.length > 0 && isHost && (

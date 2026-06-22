@@ -13,6 +13,7 @@
     "@anuradev/capacitor-background-mode": "^7.2.1",
     "@capacitor/android": "^8.3.4",
     "@capacitor/core": "^8.3.4",
+    "@hello-pangea/dnd": "^18.0.1",
     "@tailwindcss/vite": "^4.3.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
