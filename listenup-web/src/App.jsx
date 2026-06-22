@@ -229,7 +229,7 @@ export default function App() {
               playerRef.current.cueVideoById?.(data.currentSong.id, data.currentTime || 0);
             }
           }
-        } else if (Math.abs((playerRef.current?.getCurrentTime?.() || 0) - (data.currentTime || 0)) > 2) {
+        } else if (Math.abs((playerRef.current?.getCurrentTime?.() || 0) - (data.currentTime || 0)) > 4) {
           // Same song but time drifted — seek to sync
           playerRef.current?.seekTo?.(data.currentTime, true);
         }
@@ -241,6 +241,27 @@ export default function App() {
       } else {
         playerRef.current?.pauseVideo?.();
         setIsPlaying(false);
+      }
+    });
+
+    socket.on('load_song', (data) => {
+      if (data.song) {
+        setCurrentSong(data.song);
+        setIsBuffering(true);
+        if (playerRef.current) {
+          playerRef.current.cueVideoById?.(data.song.id);
+        }
+      }
+    });
+
+    socket.on('start_playback', (data) => {
+      if (playerRef.current) {
+        playerRef.current.playVideo?.();
+        if (data.currentTime !== undefined) {
+          playerRef.current.seekTo?.(data.currentTime, true);
+        }
+        setIsPlaying(true);
+        setIsBuffering(false);
       }
     });
 
@@ -463,6 +484,10 @@ export default function App() {
       }
     } else if (state === 3) { // BUFFERING
       setIsBuffering(true);
+    } else if (state === 5) { // CUED
+      if (stateRef.current.activeRoom && socketRef.current) {
+        socketRef.current.emit('player_ready');
+      }
     }
   };
 
@@ -479,22 +504,10 @@ export default function App() {
       setDuration(0);
       
       if (isHost && activeRoom) {
-        // Host in a room: cue the video (buffer it) and wait 2.5s so listeners can preload too
-        if (playerRef.current.cueVideoById) {
-          playerRef.current.cueVideoById(currentSong.id);
-        } else {
-          playerRef.current.loadVideoById(currentSong.id);
-          playerRef.current.pauseVideo?.();
+        // Host in a room: tell server to orchestrate playback sync
+        if (socketRef.current) {
+          socketRef.current.emit('prepare_song', { song: currentSong });
         }
-        setIsPlaying(false); // This syncs to listeners so they also pause
-        
-        // Start playing after buffering period
-        setTimeout(() => {
-          if (stateRef.current.currentSong?.id === currentSong.id) {
-            playerRef.current?.playVideo?.();
-            setIsPlaying(true);
-          }
-        }, 2500);
       } else {
         // Normal solo playback
         playerRef.current.loadVideoById(currentSong.id);

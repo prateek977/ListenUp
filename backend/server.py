@@ -276,6 +276,13 @@ def handle_disconnect():
             if len(room['participants']) == 0:
                 del rooms[room_code]
                 logger.info(f'Room {room_code} deleted (empty)')
+            else:
+                # If someone leaves while we are waiting for ready state, check if we can start
+                expected = len(room['participants'])
+                ready = [s for s in room.get('ready_users', []) if any(p['sid'] == s for p in room['participants'])]
+                if expected > 0 and len(ready) >= expected and not room.get('isPlaying') and room.get('currentSong'):
+                    room['isPlaying'] = True
+                    socketio.emit('start_playback', {'currentTime': 0}, to=room_code)
         del user_rooms[sid]
 
 @socketio.on('create_room')
@@ -301,7 +308,9 @@ def handle_create_room(data):
         'currentSong': None,
         'isPlaying': False,
         'currentTime': 0,
-        'lastSyncAt': datetime.utcnow().isoformat()
+        'lastSyncAt': datetime.utcnow().isoformat(),
+        'ready_users': [],
+        'sync_id': 0
     }
     rooms[room_code] = room
     user_rooms[sid] = room_code
@@ -372,6 +381,12 @@ def handle_leave_room(data):
         }, to=room_code)
         if len(room['participants']) == 0:
             del rooms[room_code]
+        else:
+            expected = len(room['participants'])
+            ready = [s for s in room.get('ready_users', []) if any(p['sid'] == s for p in room['participants'])]
+            if expected > 0 and len(ready) >= expected and not room.get('isPlaying') and room.get('currentSong'):
+                room['isPlaying'] = True
+                socketio.emit('start_playback', {'currentTime': 0}, to=room_code)
     if sid in user_rooms:
         del user_rooms[sid]
     emit('room_left', {'message': 'You left the room.'})
@@ -401,6 +416,50 @@ def handle_sync_playback(data):
         'currentTime': room['currentTime'],
         'lastSyncAt': room['lastSyncAt']
     }, to=room_code, include_self=False)
+
+@socketio.on('prepare_song')
+def handle_prepare_song(data):
+    sid = request.sid
+    if sid not in user_rooms: return
+    room_code = user_rooms[sid]
+    if room_code not in rooms: return
+    room = rooms[room_code]
+    if room['host_sid'] != sid: return
+
+    song = data.get('song')
+    room['currentSong'] = song
+    room['isPlaying'] = False
+    room['currentTime'] = 0
+    room['ready_users'] = []
+    room['sync_id'] = room.get('sync_id', 0) + 1
+    current_sync_id = room['sync_id']
+
+    emit('load_song', {'song': song}, to=room_code)
+
+    def timeout_task():
+        socketio.sleep(5)
+        if room_code in rooms and rooms[room_code].get('sync_id') == current_sync_id:
+            if not rooms[room_code].get('isPlaying'):
+                rooms[room_code]['isPlaying'] = True
+                socketio.emit('start_playback', {'currentTime': 0}, to=room_code)
+
+    socketio.start_background_task(timeout_task)
+
+@socketio.on('player_ready')
+def handle_player_ready():
+    sid = request.sid
+    if sid not in user_rooms: return
+    room_code = user_rooms[sid]
+    if room_code not in rooms: return
+    room = rooms[room_code]
+
+    if sid not in room.get('ready_users', []):
+        room.setdefault('ready_users', []).append(sid)
+
+    expected = len(room['participants'])
+    if len(room['ready_users']) >= expected and not room.get('isPlaying'):
+        room['isPlaying'] = True
+        emit('start_playback', {'currentTime': 0}, to=room_code)
 
 @socketio.on('request_song')
 def handle_request_song(data):
