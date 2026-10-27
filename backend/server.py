@@ -8,6 +8,7 @@ import os
 import random
 import string
 from datetime import datetime
+from auth import require_auth, verify_supabase_token
 
 # Set up static folder pointing to the React production build if it exists
 base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -100,6 +101,7 @@ _CACHE_TTL = 600  # 10 minutes
 
 BROWSE_CATEGORIES = {
     "trending": "latest trending hit songs india official music video",
+    "sad": "sad emotional heartbreak songs hindi official video",
     "bollywood": "latest bollywood songs official video",
     "hollywood": "popular english songs official video",
     "lofi": "lofi chill single track hindi",
@@ -238,6 +240,128 @@ def get_stream(video_id):
     except Exception as e:
         logger.error(f"Error extracting stream for {video_id}: {str(e)}")
         return jsonify({"error": str(e)}), 500
+
+# ─── Authenticated & Personalized Recommendation Endpoints ──────────
+
+@app.route('/api/auth/verify', methods=['GET'])
+@require_auth
+def verify_authenticated_user():
+    """Verify Supabase JWT token and return verified user claims"""
+    user = getattr(request, 'user', {})
+    return jsonify({
+        "status": "authenticated",
+        "user_id": user.get('sub') or user.get('id'),
+        "email": user.get('email'),
+        "role": user.get('role', 'authenticated')
+    })
+
+_personalized_cache = {}
+
+@app.route('/api/recommendations/personalized', methods=['POST'])
+def get_personalized_recommendations():
+    """
+    Generate personalized recommendations based on user's saved preferences
+    (favorite artists, preferred genres, languages, and listening moods)
+    """
+    try:
+        body = request.get_json() or {}
+        artists = body.get('artists', [])
+        genres = body.get('genres', [])
+        languages = body.get('languages', [])
+        moods = body.get('moods', [])
+
+        cache_key = f"{','.join(sorted(artists[:3]))}:{','.join(sorted(genres[:3]))}:{','.join(sorted(moods[:2]))}"
+        now = _time.time()
+        if cache_key in _personalized_cache:
+            data, timestamp = _personalized_cache[cache_key]
+            if now - timestamp < _CACHE_TTL:
+                return jsonify(data)
+
+        ydl_opts = {
+            'extract_flat': 'in_playlist',
+            'quiet': True,
+            'no_warnings': True,
+        }
+
+        artist_sections = []
+        # Fetch top tracks for up to 3 favorite artists
+        for artist in artists[:3]:
+            artist_name = artist if isinstance(artist, str) else artist.get('name', '')
+            if not artist_name:
+                continue
+            query = f"{artist_name} best songs official hit video"
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(f"ytsearch10:{query}", download=False)
+                    entries = info.get('entries', [])
+                    songs = []
+                    for entry in entries:
+                        if not entry or not entry.get('id'):
+                            continue
+                        dur = entry.get('duration') or 0
+                        if dur < 60 or dur > 600:
+                            continue
+                        vid_id = entry.get('id')
+                        thumb = f"https://i.ytimg.com/vi/{vid_id}/mqdefault.jpg"
+                        thumbnails = entry.get('thumbnails', [])
+                        if thumbnails:
+                            thumb = thumbnails[-1].get('url') or thumb
+                        songs.append({
+                            "id": vid_id,
+                            "title": entry.get('title') or f"Song by {artist_name}",
+                            "artist": entry.get('uploader') or artist_name,
+                            "thumbnailUrl": thumb,
+                            "duration": int(dur),
+                            "viewCount": entry.get('view_count') or 0
+                        })
+                    if songs:
+                        artist_sections.append({
+                            "artistName": artist_name,
+                            "songs": songs[:10]
+                        })
+            except Exception as ex:
+                logger.warning(f"Error fetching tracks for artist {artist_name}: {ex}")
+
+        # Fetch tailored mix for user's favorite genre/mood
+        genre_mix = []
+        primary_genre = genres[0] if genres else "Bollywood"
+        primary_lang = languages[0] if languages else "Hindi"
+        primary_mood = moods[0] if moods else "Chill"
+        mix_query = f"{primary_genre} {primary_mood} songs {primary_lang} official"
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(f"ytsearch10:{mix_query}", download=False)
+                for entry in (info.get('entries', []) or []):
+                    if not entry or not entry.get('id'):
+                        continue
+                    dur = entry.get('duration') or 0
+                    if dur < 60 or dur > 600:
+                        continue
+                    vid_id = entry.get('id')
+                    thumb = f"https://i.ytimg.com/vi/{vid_id}/mqdefault.jpg"
+                    genre_mix.append({
+                        "id": vid_id,
+                        "title": entry.get('title') or "Curated Track",
+                        "artist": entry.get('uploader') or "Featured Artist",
+                        "thumbnailUrl": thumb,
+                        "duration": int(dur)
+                    })
+        except Exception as ex:
+            logger.warning(f"Error fetching mix recommendations: {ex}")
+
+        result = {
+            "artistSections": artist_sections,
+            "tailoredMix": {
+                "title": f"Your {primary_genre} & {primary_mood} Mix",
+                "badge": "For Your Taste",
+                "songs": genre_mix[:10]
+            }
+        }
+        _personalized_cache[cache_key] = (result, now)
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Error generating personalized recommendations: {str(e)}")
+        return jsonify({"artistSections": [], "tailoredMix": None, "error": str(e)}), 500
 
 # ─── Music Rooms: In-Memory Store ────────────────────────────────────
 
