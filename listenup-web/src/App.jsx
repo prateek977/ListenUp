@@ -13,6 +13,7 @@ import OnboardingFlow from './components/onboarding/OnboardingFlow';
 import GuestMigrationModal from './components/profile/GuestMigrationModal';
 import { STARTER_ARTISTS } from './lib/starterCatalog';
 import { NowPlayingScreen } from './components/player';
+import { supabase, isSupabaseConfigured } from './lib/supabaseClient';
 
 gsap.registerPlugin(ScrollTrigger);
 
@@ -118,6 +119,63 @@ export default function App() {
       }
     }
     prevUserRef.current = user;
+  }, [user?.id]);
+
+  // Two-way cloud sync: Fetch cloud favorites & playlists from Supabase when user logs in
+  useEffect(() => {
+    if (!user?.id || !isSupabaseConfigured) return;
+
+    let isMounted = true;
+    const syncUserData = async () => {
+      try {
+        // 1. Fetch user favorites from cloud
+        const { data: cloudFavs, error: favsErr } = await supabase
+          .from('user_favorites')
+          .select('song_data')
+          .eq('user_id', user.id);
+
+        if (!favsErr && cloudFavs && isMounted) {
+          const loadedFavs = cloudFavs.map(r => r.song_data).filter(Boolean);
+          if (loadedFavs.length > 0) {
+            setFavorites(prev => {
+              const existingIds = new Set(loadedFavs.map(s => s.id));
+              const localUnsynced = prev.filter(s => !existingIds.has(s.id));
+              const merged = [...loadedFavs, ...localUnsynced];
+              localStorage.setItem('listenup_favorites', JSON.stringify(merged));
+              return merged;
+            });
+          }
+        }
+
+        // 2. Fetch user playlists from cloud
+        const { data: cloudPls, error: plsErr } = await supabase
+          .from('user_playlists')
+          .select('id, name, songs')
+          .eq('user_id', user.id);
+
+        if (!plsErr && cloudPls && isMounted) {
+          const loadedPls = cloudPls.map(p => ({
+            id: p.id,
+            name: p.name,
+            songs: Array.isArray(p.songs) ? p.songs : []
+          }));
+          if (loadedPls.length > 0) {
+            setPlaylists(prev => {
+              const existingIds = new Set(loadedPls.map(p => p.id));
+              const localUnsynced = prev.filter(p => !existingIds.has(p.id));
+              const merged = [...loadedPls, ...localUnsynced];
+              localStorage.setItem('listenup_playlists', JSON.stringify(merged));
+              return merged;
+            });
+          }
+        }
+      } catch (err) {
+        console.warn('Could not sync favorites/playlists with cloud:', err);
+      }
+    };
+
+    syncUserData();
+    return () => { isMounted = false; };
   }, [user?.id]);
 
   const [volume, setVolume] = useState(() => {
@@ -968,50 +1026,139 @@ export default function App() {
     });
   };
 
-  // Favorites Operation
-  const toggleFavorite = (song) => {
+  // Favorites Operation with automatic Supabase Cloud Sync
+  const toggleFavorite = async (song) => {
+    const isAlreadyFav = favorites.some(s => s.id === song.id);
     let newFavs;
-    if (favorites.some(s => s.id === song.id)) {
+    if (isAlreadyFav) {
       newFavs = favorites.filter(s => s.id !== song.id);
     } else {
       newFavs = [...favorites, song];
     }
     setFavorites(newFavs);
     localStorage.setItem('listenup_favorites', JSON.stringify(newFavs));
+
+    // Cloud sync if authenticated
+    if (user?.id && isSupabaseConfigured) {
+      try {
+        if (isAlreadyFav) {
+          await supabase
+            .from('user_favorites')
+            .delete()
+            .eq('user_id', user.id)
+            .eq('song_id', song.id);
+        } else {
+          await supabase
+            .from('user_favorites')
+            .upsert({
+              user_id: user.id,
+              song_id: song.id,
+              song_data: song
+            }, { onConflict: 'user_id, song_id' });
+        }
+      } catch (err) {
+        console.warn('Favorite cloud sync error:', err);
+      }
+    }
   };
 
-  // Playlists Operations
-  const createPlaylist = (name) => {
+  // Playlists Operations with automatic Supabase Cloud Sync
+  const createPlaylist = async (name) => {
     const cleanName = name.trim();
     if (!cleanName) return;
+    const tempId = 'pl_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
     const newPlaylist = {
-      id: 'pl_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
+      id: tempId,
       name: cleanName,
       songs: []
     };
     setPlaylists(prev => [...prev, newPlaylist]);
+
+    if (user?.id && isSupabaseConfigured) {
+      try {
+        const { data, error } = await supabase
+          .from('user_playlists')
+          .insert({
+            user_id: user.id,
+            name: cleanName,
+            songs: []
+          })
+          .select()
+          .single();
+        if (!error && data) {
+          setPlaylists(prev => prev.map(p => p.id === tempId ? { ...p, id: data.id } : p));
+        }
+      } catch (err) {
+        console.warn('Playlist cloud creation error:', err);
+      }
+    }
   };
 
-  const deletePlaylist = (playlistId) => {
+  const deletePlaylist = async (playlistId) => {
     setPlaylists(prev => prev.filter(pl => pl.id !== playlistId));
     if (activePlaylistId === playlistId) {
       setActivePlaylistId(null);
     }
+
+    if (user?.id && isSupabaseConfigured) {
+      try {
+        await supabase
+          .from('user_playlists')
+          .delete()
+          .eq('user_id', user.id)
+          .eq('id', playlistId);
+      } catch (err) {
+        console.warn('Playlist cloud deletion error:', err);
+      }
+    }
   };
 
-  const addSongToPlaylist = (playlistId, song) => {
+  const addSongToPlaylist = async (playlistId, song) => {
+    let targetPlaylist = null;
     setPlaylists(prev => prev.map(pl => {
       if (pl.id !== playlistId) return pl;
       if (pl.songs.some(s => s.id === song.id)) return pl;
-      return { ...pl, songs: [...pl.songs, song] };
+      const updated = { ...pl, songs: [...pl.songs, song] };
+      targetPlaylist = updated;
+      return updated;
     }));
+
+    if (user?.id && isSupabaseConfigured) {
+      try {
+        const currentPl = targetPlaylist || playlists.find(p => p.id === playlistId);
+        const newSongs = currentPl && !currentPl.songs.some(s => s.id === song.id)
+          ? [...currentPl.songs, song]
+          : (currentPl?.songs || [song]);
+        await supabase
+          .from('user_playlists')
+          .update({ songs: newSongs, updated_at: new Date().toISOString() })
+          .eq('user_id', user.id)
+          .eq('id', playlistId);
+      } catch (err) {
+        console.warn('Add song to playlist cloud error:', err);
+      }
+    }
   };
 
-  const removeSongFromPlaylist = (playlistId, songId) => {
+  const removeSongFromPlaylist = async (playlistId, songId) => {
+    let filteredSongs = [];
     setPlaylists(prev => prev.map(pl => {
       if (pl.id !== playlistId) return pl;
-      return { ...pl, songs: pl.songs.filter(s => s.id !== songId) };
+      filteredSongs = pl.songs.filter(s => s.id !== songId);
+      return { ...pl, songs: filteredSongs };
     }));
+
+    if (user?.id && isSupabaseConfigured) {
+      try {
+        await supabase
+          .from('user_playlists')
+          .update({ songs: filteredSongs, updated_at: new Date().toISOString() })
+          .eq('user_id', user.id)
+          .eq('id', playlistId);
+      } catch (err) {
+        console.warn('Remove song from playlist cloud error:', err);
+      }
+    }
   };
 
   const playPlaylist = (playlist) => {
