@@ -1,8 +1,8 @@
 import { createClient } from '@supabase/supabase-js';
 
-// Retrieve publishable configuration from Vite environment variables
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+// Retrieve publishable configuration from Vite environment variables or defaults
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://jtwkwrtxewuwdwkjpzwx.supabase.co';
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || 'sb_publishable_gz0SebFP6vUTc5GnkvnDZg_ZvNKP87X';
 
 // Check if valid Supabase URL is provided
 export const isSupabaseConfigured = Boolean(

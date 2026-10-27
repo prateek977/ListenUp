@@ -73,10 +73,7 @@ export default function AuthModal({ isOpen, onClose, initialMode = 'signin' }) {
 
   const handleGoogleAuth = async () => {
     setErrorMessage('');
-    if (!isSupabaseConfigured) {
-      setErrorMessage('Google OAuth requires configuring VITE_SUPABASE_URL and Google Provider in Supabase.');
-      return;
-    }
+    setLoading(true);
     try {
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
@@ -86,7 +83,14 @@ export default function AuthModal({ isOpen, onClose, initialMode = 'signin' }) {
       });
       if (error) throw error;
     } catch (err) {
-      setErrorMessage(err.message || 'Google authentication failed.');
+      const msg = err.message || '';
+      if (msg.toLowerCase().includes('not enabled') || msg.toLowerCase().includes('unsupported provider')) {
+        setErrorMessage('Google Sign-In is not enabled in this Supabase project yet. Please create an account or sign in with Email & Password above.');
+      } else {
+        setErrorMessage(msg || 'Google authentication failed.');
+      }
+    } finally {
+      setLoading(false);
     }
   };
 
