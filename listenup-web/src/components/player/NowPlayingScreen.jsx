@@ -6,12 +6,13 @@ import PlaybackControls from './PlaybackControls';
 
 /**
  * NowPlayingScreen
- * Full-screen immersive dark music player inspired by the reference design:
+ * Full-screen immersive dark music player:
  * - Deep black atmospheric surface (#08080D)
  * - Large square artwork with rounded corners & soft elevation
  * - Subtle blurred ambient background derived from album artwork
  * - Clean typography hierarchy (#F5F5F7 & #9999A6)
  * - Lime-green accents (#D5F36A) for playback progress & master play/pause
+ * - Functional controls: Like, Add to Playlist, Shuffle, Queue, More Options (3-dot)
  * - Smooth touch-drag dismiss & in-screen queue sheet
  */
 export default function NowPlayingScreen({
@@ -26,15 +27,21 @@ export default function NowPlayingScreen({
   onPrevious,
   onNext,
   onSeek,
-  formatTime,
+  formatTime = (s) => `${s}s`,
   shuffle = false,
   onToggleShuffle,
   repeat = 'off',
   onToggleRepeat,
   favorites = [],
   onToggleFavorite,
+  onAddToPlaylist,
+  onOpenMoreOptions,
   queue = [],
   onPlayFromQueue,
+  onRemoveFromQueue,
+  onRemoveSong,
+  onMoveSong,
+  onClearUpcoming,
   activeRoom = null,
   volume = 100,
   isMuted = false,
@@ -45,15 +52,26 @@ export default function NowPlayingScreen({
   const [touchStart, setTouchStart] = useState(null);
   const containerRef = useRef(null);
 
+  // Derive current song index and upcoming songs
+  const currentIdx = currentSong ? queue.findIndex(s => s.id === currentSong.id) : -1;
+  const upcomingSongs = currentIdx >= 0 ? queue.slice(currentIdx + 1) : queue;
+
   // Keyboard accessibility
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen) {
+      setIsQueueDrawerOpen(false);
+      return;
+    }
 
     const handleKeyDown = (e) => {
       if (['INPUT', 'TEXTAREA'].includes(e.target.tagName)) return;
 
       if (e.key === 'Escape') {
-        onClose?.();
+        if (isQueueDrawerOpen) {
+          setIsQueueDrawerOpen(false);
+        } else {
+          onClose?.();
+        }
       } else if (e.key === ' ') {
         e.preventDefault();
         onPlayPause?.();
@@ -68,7 +86,7 @@ export default function NowPlayingScreen({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, onClose, onPlayPause, onSeek, currentTime, duration]);
+  }, [isOpen, isQueueDrawerOpen, onClose, onPlayPause, onSeek, currentTime, duration]);
 
   // Touch swipe-down to dismiss
   const handleTouchStart = (e) => {
@@ -108,24 +126,21 @@ export default function NowPlayingScreen({
     >
       {/* 1. Ambient Blurred Artwork & Deep Background Layers */}
       <div className="absolute inset-0 pointer-events-none overflow-hidden z-0">
-        {/* Enlarged blurred artwork with gentle opacity */}
         <div
           className="absolute inset-0 bg-cover bg-center transition-all duration-700 scale-125 filter blur-3xl opacity-25"
           style={{ backgroundImage: `url(${thumbnailUrl})` }}
         />
-        {/* Deep charcoal black gradient overlay ensuring crisp contrast */}
         <div className="absolute inset-0 bg-gradient-to-b from-[#08080D]/85 via-[#08080D]/95 to-[#08080D]" />
-        
-        {/* Subtle lime ambient light at top */}
         <div className="absolute -top-32 left-1/2 -translate-x-1/2 w-[500px] h-[350px] bg-[#D5F36A]/5 rounded-full filter blur-[120px] pointer-events-none" />
       </div>
 
       {/* 2. Top Header Navigation Bar */}
       <header className="relative z-20 w-full max-w-lg mx-auto flex items-center justify-between px-4 sm:px-6 py-2">
-        {/* Minimize / Back Button */}
+        {/* Minimize / Close Button */}
         <button
           onClick={onClose}
           aria-label="Collapse Now Playing"
+          title="Minimize player"
           className="min-w-[44px] min-h-[44px] flex items-center justify-center rounded-full text-[#9999A6] hover:text-[#F5F5F7] hover:bg-white/[0.08] active:scale-90 transition-all cursor-pointer"
         >
           <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor" className="w-5 h-5">
@@ -147,6 +162,7 @@ export default function NowPlayingScreen({
         <button
           onClick={() => setIsQueueDrawerOpen(!isQueueDrawerOpen)}
           aria-label="Toggle Queue"
+          title="View upcoming queue"
           className={`min-w-[44px] min-h-[44px] flex items-center justify-center rounded-full transition-all cursor-pointer relative ${
             isQueueDrawerOpen ? 'text-[#D5F36A] bg-white/[0.08]' : 'text-[#9999A6] hover:text-[#F5F5F7] hover:bg-white/[0.08]'
           }`}
@@ -154,7 +170,7 @@ export default function NowPlayingScreen({
           <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-5 h-5">
             <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
           </svg>
-          {queue.length > 0 && (
+          {upcomingSongs.length > 0 && (
             <span className="absolute top-2 right-2 w-2 h-2 rounded-full bg-[#D5F36A]" />
           )}
         </button>
@@ -162,7 +178,6 @@ export default function NowPlayingScreen({
 
       {/* 3. Center Section: Large Square Album Artwork with Rounded Corners */}
       <main className="relative z-20 flex-1 flex flex-col items-center justify-center px-6 py-2 min-h-0 w-full max-w-lg mx-auto">
-        {/* Large Square Artwork Container */}
         <div className="w-full max-w-[320px] sm:max-w-[360px] md:max-w-[380px] aspect-square flex items-center justify-center">
           <AlbumArtwork
             src={thumbnailUrl}
@@ -172,12 +187,14 @@ export default function NowPlayingScreen({
           />
         </div>
 
-        {/* Track Title, Artist, and Favorite Toggle */}
+        {/* Track Title, Artist, Favorite, Add to Playlist & More Options */}
         <div className="w-full mt-6 sm:mt-8">
           <TrackMetadata
             song={currentSong}
             isFavorite={isFavorite}
             onToggleFavorite={onToggleFavorite}
+            onAddToPlaylist={onAddToPlaylist}
+            onOpenMoreOptions={onOpenMoreOptions}
           />
         </div>
       </main>
@@ -208,7 +225,7 @@ export default function NowPlayingScreen({
           isNextDisabled={queue.length === 0}
           onToggleQueue={() => setIsQueueDrawerOpen(!isQueueDrawerOpen)}
           isQueueOpen={isQueueDrawerOpen}
-          queueCount={queue.length}
+          queueCount={upcomingSongs.length}
           volume={volume}
           isMuted={isMuted}
           onVolumeChange={onVolumeChange}
@@ -229,59 +246,133 @@ export default function NowPlayingScreen({
               <div>
                 <h3 className="text-base font-bold text-[#F5F5F7] flex items-center gap-2">
                   <span>Up Next</span>
-                  <span className="text-xs font-mono px-2 py-0.5 rounded-full bg-[#191922] text-[#D5F36A] border border-white/[0.08]">
-                    {queue.length}
-                  </span>
+                  {upcomingSongs.length > 0 && (
+                    <span className="text-xs font-mono px-2 py-0.5 rounded-full bg-[#191922] text-[#D5F36A] border border-white/[0.08]">
+                      {upcomingSongs.length} upcoming
+                    </span>
+                  )}
                 </h3>
-                <p className="text-xs text-[#9999A6]">Tap any song to play instantly</p>
+                <p className="text-xs text-[#9999A6]">Upcoming tracks will play in this order</p>
               </div>
-              <button
-                onClick={() => setIsQueueDrawerOpen(false)}
-                className="p-2 rounded-full hover:bg-white/[0.08] text-[#9999A6] hover:text-[#F5F5F7] transition-colors cursor-pointer"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-5 h-5">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
+
+              <div className="flex items-center gap-2">
+                {upcomingSongs.length > 0 && onClearUpcoming && (
+                  <button
+                    onClick={() => {
+                      onClearUpcoming();
+                    }}
+                    className="text-xs font-medium text-[#9999A6] hover:text-rose-400 px-2 py-1 transition-colors cursor-pointer"
+                  >
+                    Clear All
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsQueueDrawerOpen(false);
+                  }}
+                  title="Close Up Next"
+                  aria-label="Close Up Next"
+                  className="p-2 rounded-full hover:bg-white/[0.08] text-[#9999A6] hover:text-[#F5F5F7] transition-colors cursor-pointer"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-5 h-5">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
             </div>
           </div>
 
           {/* Queue Song List */}
-          <div className="flex-1 overflow-y-auto px-4 py-2 custom-scrollbar divide-y divide-white/[0.04]">
-            {queue.length === 0 ? (
-              <div className="py-16 text-center text-[#666674]">
-                <p className="text-sm">Queue is empty.</p>
-                <p className="text-xs mt-1">Search or browse to add tracks to the queue.</p>
+          <div className="flex-1 overflow-y-auto px-4 py-3 custom-scrollbar divide-y divide-white/[0.04]">
+            {upcomingSongs.length === 0 ? (
+              <div className="py-16 text-center text-[#666674] flex flex-col items-center">
+                <div className="w-12 h-12 rounded-full bg-white/[0.03] border border-white/[0.06] flex items-center justify-center text-[#666674] mb-3">
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="w-6 h-6">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 9l10.5-3m0 6.553v3.75a2.25 2.25 0 01-1.632 2.163l-1.32.377a1.803 1.803 0 11-.99-3.467l2.31-.66a.75.75 0 00.532-.72v-4.99" />
+                  </svg>
+                </div>
+                <p className="text-sm font-semibold text-[#F5F5F7]">Your queue is empty.</p>
+                <p className="text-xs text-[#9999A6] mt-1">Use "Play Next" or "Add to Queue" from any track's menu.</p>
               </div>
             ) : (
-              queue.map((song, index) => {
-                const isCurrent = currentSong?.id === song.id;
+              upcomingSongs.map((song, idx) => {
+                const actualFrom = currentIdx >= 0 ? currentIdx + 1 + idx : idx;
                 return (
                   <div
-                    key={`${song.id}-${index}`}
-                    onClick={() => {
-                      onPlayFromQueue?.(song);
-                      setIsQueueDrawerOpen(false);
-                    }}
-                    className={`flex items-center gap-3 py-2.5 px-3 rounded-2xl transition-all cursor-pointer ${
-                      isCurrent ? 'bg-[#191922] border border-[#D5F36A]/40' : 'hover:bg-white/[0.04]'
-                    }`}
+                    key={`${song.id}-${idx}`}
+                    className="flex items-center gap-3 py-2.5 px-3 rounded-2xl transition-all group hover:bg-white/[0.04]"
                   >
-                    <span className="text-xs font-mono text-[#666674] w-5 text-center">
-                      {index + 1}
+                    <span className="text-xs font-mono text-[#666674] w-5 text-center flex-shrink-0">
+                      {idx + 1}
                     </span>
-                    <div className="w-11 h-11 rounded-xl overflow-hidden bg-black/60 flex-shrink-0">
-                      <img src={song.thumbnailUrl} alt={song.title} className="w-full h-full object-cover" />
+                    <div 
+                      onClick={() => {
+                        onPlayFromQueue?.(song);
+                        setIsQueueDrawerOpen(false);
+                      }}
+                      className="w-11 h-11 rounded-xl overflow-hidden bg-black/60 flex-shrink-0 cursor-pointer"
+                    >
+                      <img src={song.thumbnailUrl} alt={song.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
                     </div>
-                    <div className="min-w-0 flex-1">
-                      <h4 className={`text-xs sm:text-sm font-semibold truncate ${isCurrent ? 'text-[#D5F36A]' : 'text-[#F5F5F7]'}`}>
+                    <div 
+                      onClick={() => {
+                        onPlayFromQueue?.(song);
+                        setIsQueueDrawerOpen(false);
+                      }}
+                      className="min-w-0 flex-1 cursor-pointer"
+                    >
+                      <h4 className="text-xs sm:text-sm font-semibold text-[#F5F5F7] group-hover:text-[#D5F36A] truncate">
                         {song.title}
                       </h4>
                       <p className="text-[11px] text-[#9999A6] truncate mt-0.5">{song.artist}</p>
                     </div>
-                    {isCurrent && isPlaying && (
-                      <span className="w-2 h-2 rounded-full bg-[#D5F36A] animate-ping flex-shrink-0" />
-                    )}
+
+                    {/* Move Up/Down & Remove Action Controls */}
+                    <div className="flex items-center gap-1 opacity-60 group-hover:opacity-100 transition-opacity">
+                      {onMoveSong && (
+                        <>
+                          <button
+                            onClick={() => onMoveSong(actualFrom, actualFrom - 1)}
+                            disabled={idx === 0}
+                            title="Move Up"
+                            className="p-1.5 rounded-lg text-[#9999A6] hover:text-[#D5F36A] disabled:opacity-20 disabled:pointer-events-none cursor-pointer"
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor" className="w-3.5 h-3.5">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 15.75l7.5-7.5 7.5 7.5" />
+                            </svg>
+                          </button>
+                          <button
+                            onClick={() => onMoveSong(actualFrom, actualFrom + 1)}
+                            disabled={idx === upcomingSongs.length - 1}
+                            title="Move Down"
+                            className="p-1.5 rounded-lg text-[#9999A6] hover:text-[#D5F36A] disabled:opacity-20 disabled:pointer-events-none cursor-pointer"
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor" className="w-3.5 h-3.5">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+                            </svg>
+                          </button>
+                        </>
+                      )}
+                      {(onRemoveFromQueue || onRemoveSong) && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const fn = onRemoveFromQueue || onRemoveSong;
+                            fn?.(song.id, idx);
+                          }}
+                          title="Remove from queue"
+                          aria-label="Remove from queue"
+                          className="p-1.5 rounded-lg text-[#9999A6] hover:text-rose-400 cursor-pointer"
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-3.5 h-3.5">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      )}
+                    </div>
                   </div>
                 );
               })

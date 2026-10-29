@@ -10,25 +10,67 @@ import { useAuth } from './lib/authContext';
 import AuthModal from './components/auth/AuthModal';
 import ProfileSettingsModal from './components/profile/ProfileSettingsModal';
 import OnboardingFlow from './components/onboarding/OnboardingFlow';
-import GuestMigrationModal from './components/profile/GuestMigrationModal';
 import { STARTER_ARTISTS } from './lib/starterCatalog';
-import { NowPlayingScreen } from './components/player';
+import { searchArtists, getArtistInitials } from './lib/artistClient';
+import { NowPlayingScreen, SongCard, SongContextMenu, QueuePanel, AddToPlaylistModal } from './components/player';
 import { supabase, isSupabaseConfigured } from './lib/supabaseClient';
 
 gsap.registerPlugin(ScrollTrigger);
 
-// Canonical API Base URL fallback
-const API_BASE_URL = (import.meta.env.VITE_API_URL || import.meta.env.VITE_BACKEND_URL || '').replace(/\/$/, '');
+// Canonical API Base URL fallback (falls back to deployed Render backend on native Android)
+const FALLBACK_PROD_API = 'https://listenup-backend.onrender.com';
+const API_BASE_URL = (
+  import.meta.env.VITE_API_URL || 
+  import.meta.env.VITE_BACKEND_URL || 
+  (Capacitor.isNativePlatform() ? FALLBACK_PROD_API : '')
+).replace(/\/$/, '');
 
 export default function App() {
   // Authentication & Personalization State
-  const { user, profile, preferences, loading: authLoading, migrateGuestData } = useAuth();
+  const {
+    user,
+    session,
+    profile,
+    preferences,
+    loading: authLoading,
+    authModalState,
+    requireAuth,
+    openAuthModal,
+    closeAuthModal
+  } = useAuth();
+
+  const sessionRef = useRef(session);
+  useEffect(() => {
+    sessionRef.current = session;
+  }, [session]);
+
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [authModalMode, setAuthModalMode] = useState('signin');
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
-  const [isGuestMigrationOpen, setIsGuestMigrationOpen] = useState(false);
   const [isNowPlayingOpen, setIsNowPlayingOpen] = useState(false);
-  const prevUserRef = useRef(null);
+  const [isQueuePanelOpen, setIsQueuePanelOpen] = useState(false);
+  const [playlistModalSong, setPlaylistModalSong] = useState(null);
+  const [activeContextMenu, setActiveContextMenu] = useState(null); // { song, anchorRect }
+  const shouldOpenNowPlayingOnPlayRef = useRef(false);
+
+  // Enforce zero guest persistence: clear any legacy guest keys on mount
+  useEffect(() => {
+    try {
+      localStorage.removeItem('listenup_favorites');
+      localStorage.removeItem('listenup_playlists');
+      localStorage.removeItem('listenup_recently_played');
+      localStorage.removeItem('listenup_suggested_songs');
+      localStorage.removeItem('listenup_had_guest_activity');
+      localStorage.removeItem('listenup_onboarding_completed_guest');
+      sessionStorage.removeItem('listenup_had_guest_activity');
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const key = localStorage.key(i);
+        if (key && (key.startsWith('listenup_guest_sync_handled_') || key.includes('_guest'))) {
+          localStorage.removeItem(key);
+        }
+      }
+    } catch {}
+  }, []);
 
   // Navigation & Search State
   const [activeCategoryFilter, setActiveCategoryFilter] = useState('music'); // 'music' | 'podcasts' | 'audiobooks' | 'live'
@@ -67,107 +109,87 @@ export default function App() {
   const [homeLoading, setHomeLoading] = useState(true);
 
   // Suggested Songs State (Personalized recommendations based on client preferences)
-  const [suggestedSongs, setSuggestedSongs] = useState(() => {
-    try {
-      const saved = localStorage.getItem('listenup_suggested_songs');
-      return saved ? JSON.parse(saved) : [];
-    } catch { return []; }
-  });
+  const [suggestedSongs, setSuggestedSongs] = useState([]);
   const [suggestedLoading, setSuggestedLoading] = useState(false);
   const [suggestedMixTitle, setSuggestedMixTitle] = useState('Based on Your Taste');
 
-  // Custom Playlists State
-  const [playlists, setPlaylists] = useState(() => {
-    const saved = localStorage.getItem('listenup_playlists');
-    if (saved) {
-      try { return JSON.parse(saved); } catch (e) { console.error(e); }
-    }
-    return [];
-  });
+  // Custom Playlists State (zero guest persistence: guests have no saved playlists)
+  const [playlists, setPlaylists] = useState([]);
   const [activePlaylistId, setActivePlaylistId] = useState(null);
   const [libraryFilter, setLibraryFilter] = useState('all'); // 'all' | 'playlists' | 'liked'
   const [newPlaylistName, setNewPlaylistName] = useState('');
-  const [contextMenu, setContextMenu] = useState({ isOpen: false, song: null });
   const [isPlayerReady, setIsPlayerReady] = useState(false);
 
   // Playback State
   const [queue, setQueue] = useState([]);
-  // Recently Played State
-  const [recentlyPlayed, setRecentlyPlayed] = useState(() => {
-    try {
-      const saved = localStorage.getItem('listenup_recently_played');
-      return saved ? JSON.parse(saved) : [];
-    } catch { return []; }
-  });
+  // Recently Played State (zero guest persistence: only kept in-memory for guests)
+  const [recentlyPlayed, setRecentlyPlayed] = useState([]);
 
-  const [favorites, setFavorites] = useState(() => {
-    try {
-      const saved = localStorage.getItem('listenup_favorites');
-      return saved ? JSON.parse(saved) : [];
-    } catch { return []; }
-  });
+  // Favorites State (zero guest persistence: guests have no saved favorites)
+  const [favorites, setFavorites] = useState([]);
 
-  // Prompt user to sync guest favorites and playlists when logging in
+  // Two-way cloud sync: Fetch cloud favorites & playlists from Supabase database when user logs in
   useEffect(() => {
-    const prevId = prevUserRef.current?.id;
-    const currentId = user?.id;
-    if (!prevId && currentId) {
-      const guestFavsCount = (favorites || []).length;
-      const guestPlsCount = (playlists || []).length;
-      if (guestFavsCount > 0 || guestPlsCount > 0) {
-        setIsGuestMigrationOpen(true);
-      }
+    if (!user?.id) {
+      setFavorites([]);
+      setPlaylists([]);
+      return;
     }
-    prevUserRef.current = user;
-  }, [user?.id]);
-
-  // Two-way cloud sync: Fetch cloud favorites & playlists from Supabase when user logs in
-  useEffect(() => {
-    if (!user?.id || !isSupabaseConfigured) return;
 
     let isMounted = true;
     const syncUserData = async () => {
       try {
-        // 1. Fetch user favorites from cloud
-        const { data: cloudFavs, error: favsErr } = await supabase
-          .from('user_favorites')
-          .select('song_data')
-          .eq('user_id', user.id);
+        let cloudFavs = [];
+        let cloudPls = [];
 
-        if (!favsErr && cloudFavs && isMounted) {
-          const loadedFavs = cloudFavs.map(r => r.song_data).filter(Boolean);
-          if (loadedFavs.length > 0) {
-            setFavorites(prev => {
-              const existingIds = new Set(loadedFavs.map(s => s.id));
-              const localUnsynced = prev.filter(s => !existingIds.has(s.id));
-              const merged = [...loadedFavs, ...localUnsynced];
-              localStorage.setItem('listenup_favorites', JSON.stringify(merged));
-              return merged;
-            });
+        // Check user-scoped local storage cache for instant hydration
+        try {
+          const cachedFavs = localStorage.getItem(`listenup_favorites_${user.id}`);
+          if (cachedFavs) cloudFavs = JSON.parse(cachedFavs);
+          const cachedPls = localStorage.getItem(`listenup_playlists_${user.id}`);
+          if (cachedPls) cloudPls = JSON.parse(cachedPls);
+        } catch {}
+
+        if (isSupabaseConfigured) {
+          // 1. Fetch user favorites & playlists from relational tables or user_metadata
+          try {
+            const [favRes, plsRes] = await Promise.all([
+              supabase.from('user_favorites').select('song_data').eq('user_id', user.id),
+              supabase.from('user_playlists').select('id, name, songs').eq('user_id', user.id)
+            ]);
+
+            if (!favRes.error && favRes.data && favRes.data.length > 0) {
+              cloudFavs = favRes.data.map(r => r.song_data).filter(Boolean);
+            } else if (Array.isArray(user.user_metadata?.favorites)) {
+              cloudFavs = user.user_metadata.favorites;
+            }
+
+            if (!plsRes.error && plsRes.data && plsRes.data.length > 0) {
+              cloudPls = plsRes.data.map(p => ({
+                id: p.id,
+                name: p.name,
+                songs: Array.isArray(p.songs) ? p.songs : []
+              }));
+            } else if (Array.isArray(user.user_metadata?.playlists)) {
+              cloudPls = user.user_metadata.playlists;
+            }
+          } catch {
+            if (Array.isArray(user.user_metadata?.favorites)) {
+              cloudFavs = user.user_metadata.favorites;
+            }
+            if (Array.isArray(user.user_metadata?.playlists)) {
+              cloudPls = user.user_metadata.playlists;
+            }
           }
         }
 
-        // 2. Fetch user playlists from cloud
-        const { data: cloudPls, error: plsErr } = await supabase
-          .from('user_playlists')
-          .select('id, name, songs')
-          .eq('user_id', user.id);
-
-        if (!plsErr && cloudPls && isMounted) {
-          const loadedPls = cloudPls.map(p => ({
-            id: p.id,
-            name: p.name,
-            songs: Array.isArray(p.songs) ? p.songs : []
-          }));
-          if (loadedPls.length > 0) {
-            setPlaylists(prev => {
-              const existingIds = new Set(loadedPls.map(p => p.id));
-              const localUnsynced = prev.filter(p => !existingIds.has(p.id));
-              const merged = [...loadedPls, ...localUnsynced];
-              localStorage.setItem('listenup_playlists', JSON.stringify(merged));
-              return merged;
-            });
-          }
+        if (isMounted) {
+          setFavorites(cloudFavs);
+          setPlaylists(cloudPls);
+          try {
+            localStorage.setItem(`listenup_favorites_${user.id}`, JSON.stringify(cloudFavs));
+            localStorage.setItem(`listenup_playlists_${user.id}`, JSON.stringify(cloudPls));
+          } catch {}
         }
       } catch (err) {
         console.warn('Could not sync favorites/playlists with cloud:', err);
@@ -215,6 +237,26 @@ export default function App() {
   const isLoadingSongRef = useRef(false);
   const silentAudioRef = useRef(null);
   const stateRef = useRef({ currentSong, queue, repeat, isPlaying, shuffle, activeRoom, isHost });
+
+  // ── Recommendation Engine State ──────────────────────────────────────────
+  // Autoplay: when the queue ends and repeat is off, fetch a smart next song
+  const [autoplayEnabled, setAutoplayEnabled] = useState(() => {
+    try { return localStorage.getItem('listenup_autoplay') !== 'false'; } catch { return true; }
+  });
+  // Guard: prevents concurrent autoplay recommendation fetches
+  const isAutoplayFetchingRef = useRef(false);
+  // Guard: prevents duplicate listening events per song session
+  // Stores {songId, playStartTime, progressReported} for the current song
+  const listenSessionRef = useRef(null);
+  // Ref keeping autoplay preference accessible inside callbacks without stale closure
+  const autoplayEnabledRef = useRef(autoplayEnabled);
+  useEffect(() => {
+    autoplayEnabledRef.current = autoplayEnabled;
+    try { localStorage.setItem('listenup_autoplay', autoplayEnabled ? 'true' : 'false'); } catch {}
+  }, [autoplayEnabled]);
+  // Home recommendation sections (populated by /api/recommendations/home)
+  const [homeRecoSections, setHomeRecoSections] = useState({ made_for_you: [], because_you: [], discover_more: [] });
+  const [homeRecoLoading, setHomeRecoLoading] = useState(false);
 
   // GSAP Animation & UI Refs
   const mainContentRef = useRef(null);
@@ -493,6 +535,12 @@ export default function App() {
   }, []);
 
   const handleCreateRoom = () => {
+    if (!user?.id) {
+      requireAuth(() => handleCreateRoom(), {
+        message: 'Log in to host a live music room.'
+      });
+      return;
+    }
     if (!newRoomName.trim()) return;
     socketRef.current?.emit('create_room', {
       roomName: newRoomName.trim(),
@@ -653,9 +701,10 @@ export default function App() {
     setSuggestedLoading(false);
   };
 
-  // Re-fetch suggested songs whenever user preferences update
+  // Re-fetch suggested songs and personalized recommendation sections whenever user preferences update
   useEffect(() => {
     fetchSuggestedSongs();
+    fetchHomeRecoSections();
   }, [
     preferences?.artists?.length, 
     preferences?.genres?.length, 
@@ -702,11 +751,53 @@ export default function App() {
       if (!inRoomAsListener) {
         setIsPlaying(true);
       }
+
+      // Open Now Playing Card when playback begins successfully (not on click)
+      if (shouldOpenNowPlayingOnPlayRef.current) {
+        setIsNowPlayingOpen(true);
+        shouldOpenNowPlayingOnPlayRef.current = false;
+      }
+
+      // Record play_started event on new playback session
+      const currentActiveSong = stateRef.current.currentSong;
+      if (currentActiveSong?.id && (!listenSessionRef.current || listenSessionRef.current.songId !== currentActiveSong.id)) {
+        listenSessionRef.current = {
+          songId: currentActiveSong.id,
+          startTime: Date.now(),
+          lastProgressReport: Date.now(),
+          lastReportedSeconds: 0,
+          completed: false
+        };
+        sendListenEvent('play_started');
+      }
+
       if (timerRef.current) clearInterval(timerRef.current);
       timerRef.current = setInterval(() => {
         if (playerRef.current && playerRef.current.getCurrentTime) {
-          setCurrentTime(playerRef.current.getCurrentTime());
-          setDuration(playerRef.current.getDuration() || 0);
+          const curT = playerRef.current.getCurrentTime();
+          const durT = playerRef.current.getDuration() || 0;
+          setCurrentTime(curT);
+          setDuration(durT);
+
+          // Periodic progress update every 30s using incremental listened delta (not cumulative position)
+          if (listenSessionRef.current && !listenSessionRef.current.completed && (Date.now() - listenSessionRef.current.lastProgressReport > 30000)) {
+            const prevSec = listenSessionRef.current.lastReportedSeconds || 0;
+            const elapsedWall = (Date.now() - listenSessionRef.current.lastProgressReport) / 1000;
+            const rawDelta = curT - prevSec;
+            // Delta must be non-negative and clamped to elapsed wall-clock time (+2s buffer)
+            const delta = rawDelta > 0 ? Math.min(rawDelta, elapsedWall + 2) : 0;
+
+            listenSessionRef.current.lastProgressReport = Date.now();
+            listenSessionRef.current.lastReportedSeconds = curT;
+
+            if (delta > 0) {
+              sendListenEvent('play_progress', {
+                listen_seconds: Math.round(delta * 10) / 10,
+                listen_fraction: durT > 0 ? Math.min(1.0, curT / durT) : null,
+                metadata: { position: curT }
+              });
+            }
+          }
         }
       }, 500);
     } else if (state === 2) { // PAUSED
@@ -722,9 +813,24 @@ export default function App() {
       if (inRoomAsListener) return;
       setIsPlaying(false);
       if (timerRef.current) clearInterval(timerRef.current);
+
+      // Record play_completed event with remaining delta
+      if (listenSessionRef.current && !listenSessionRef.current.completed && listenSessionRef.current.songId === stateRef.current.currentSong?.id) {
+        listenSessionRef.current.completed = true;
+        const prevSec = listenSessionRef.current.lastReportedSeconds || 0;
+        const durT = (playerRef.current && playerRef.current.getDuration) ? playerRef.current.getDuration() : 0;
+        const remainingDelta = durT > prevSec ? Math.max(0, durT - prevSec) : 0;
+        sendListenEvent('play_completed', {
+          listen_seconds: Math.round(remainingDelta * 10) / 10,
+          listen_fraction: 1.0,
+          metadata: { position: durT }
+        });
+      }
       
       const { repeat: currentRepeat } = stateRef.current;
       if (currentRepeat === 'one') {
+        // Reset listening session so repeated play tracks from scratch
+        listenSessionRef.current = null;
         playerRef.current.seekTo(0);
         playerRef.current.playVideo();
         setIsPlaying(true);
@@ -861,6 +967,10 @@ export default function App() {
 
   // Queue Operations
   const playSong = (song) => {
+    shouldOpenNowPlayingOnPlayRef.current = true;
+    if (currentSong && currentSong.id !== song.id) {
+      checkAndSendSkip();
+    }
     // If in a room and NOT the host, send request to host instead of playing locally
     const { activeRoom: currentRoom, isHost: currentIsHost } = stateRef.current;
     if (currentRoom && !currentIsHost && socketRef.current) {
@@ -885,6 +995,10 @@ export default function App() {
 
   // Play a song from a list/section and queue all remaining songs as "Up Next"
   const playSongFromList = (song, allSongs) => {
+    shouldOpenNowPlayingOnPlayRef.current = true;
+    if (currentSong && currentSong.id !== song.id) {
+      checkAndSendSkip();
+    }
     const { activeRoom: currentRoom, isHost: currentIsHost } = stateRef.current;
     if (currentRoom && !currentIsHost && socketRef.current) {
       socketRef.current.emit('request_song', { song, displayName });
@@ -914,12 +1028,78 @@ export default function App() {
     setQueue(prev => [...prev, song]);
   };
 
-  const removeFromQueue = (songId) => {
+  // Place song immediately after current track without overwriting existing queue
+  const playNextInQueue = (song) => {
+    const { activeRoom: currentRoom, isHost: currentIsHost, currentSong: activeSong } = stateRef.current;
+    if (currentRoom && !currentIsHost) return;
+
+    setQueue(prev => {
+      const curIdx = activeSong ? prev.findIndex(s => s.id === activeSong.id) : -1;
+      const withoutSong = prev.filter(s => s.id !== song.id);
+      const newCurIdx = activeSong ? withoutSong.findIndex(s => s.id === activeSong.id) : -1;
+      if (newCurIdx >= 0) {
+        const nextQueue = [...withoutSong];
+        nextQueue.splice(newCurIdx + 1, 0, song);
+        return nextQueue;
+      } else {
+        return [song, ...withoutSong];
+      }
+    });
+  };
+
+  const moveSongInQueue = (fromIndex, toIndex) => {
     const { activeRoom: currentRoom, isHost: currentIsHost } = stateRef.current;
     if (currentRoom && !currentIsHost) return;
 
-    setQueue(prev => prev.filter(s => s.id !== songId));
-    if (currentSong?.id === songId) {
+    setQueue(prev => {
+      if (fromIndex < 0 || fromIndex >= prev.length || toIndex < 0 || toIndex >= prev.length) {
+        return prev;
+      }
+      const updated = [...prev];
+      const [moved] = updated.splice(fromIndex, 1);
+      updated.splice(toIndex, 0, moved);
+      return updated;
+    });
+  };
+
+  const clearUpcomingQueue = () => {
+    const { activeRoom: currentRoom, isHost: currentIsHost, currentSong: activeSong } = stateRef.current;
+    if (currentRoom && !currentIsHost) return;
+
+    setQueue(prev => {
+      if (activeSong) {
+        const curIdx = prev.findIndex(s => s.id === activeSong.id);
+        if (curIdx >= 0) {
+          return prev.slice(0, curIdx + 1);
+        }
+        return [activeSong];
+      }
+      return [];
+    });
+  };
+
+  const removeFromQueue = (identifier, indexInUpcoming = null) => {
+    const { activeRoom: currentRoom, isHost: currentIsHost, currentSong: activeSong } = stateRef.current;
+    if (currentRoom && !currentIsHost) return;
+
+    const targetId = typeof identifier === 'object' && identifier !== null ? identifier.id : identifier;
+
+    setQueue(prev => {
+      // If an index in upcoming was provided, remove that exact track relative to current song
+      if (typeof indexInUpcoming === 'number' && indexInUpcoming >= 0) {
+        const curIdx = activeSong ? prev.findIndex(s => s.id === activeSong.id) : -1;
+        const actualIdx = curIdx >= 0 ? curIdx + 1 + indexInUpcoming : indexInUpcoming;
+        if (actualIdx >= 0 && actualIdx < prev.length) {
+          const next = [...prev];
+          next.splice(actualIdx, 1);
+          return next;
+        }
+      }
+      // Otherwise remove by ID comparison (coercing to string to prevent type mismatch)
+      return prev.filter(s => String(s.id) !== String(targetId));
+    });
+
+    if (currentSong && String(currentSong.id) === String(targetId)) {
       playNext();
     }
   };
@@ -937,8 +1117,14 @@ export default function App() {
   };
 
   const playNext = () => {
+    checkAndSendSkip();
     const { queue: currentQueue, currentSong: activeSong, repeat: currentRepeat, activeRoom: currentRoom, isHost: currentIsHost } = stateRef.current;
-    if (currentQueue.length === 0) return;
+    if (currentQueue.length === 0) {
+      if (autoplayEnabledRef.current) {
+        fetchAutoplayRecommendation(true);
+      }
+      return;
+    }
     
     // Listeners should request to play next
     if (currentRoom && !currentIsHost) {
@@ -955,9 +1141,15 @@ export default function App() {
       playSong(currentQueue[0]);
     } else if (currentIdx < currentQueue.length - 1) {
       playSong(currentQueue[currentIdx + 1]);
+      // If near end of queue, prefetch recommendations
+      if (currentIdx + 1 >= currentQueue.length - 1 && autoplayEnabledRef.current) {
+        fetchAutoplayRecommendation(false);
+      }
     } else {
       if (currentRepeat === 'all') {
         playSong(currentQueue[0]);
+      } else if (autoplayEnabledRef.current) {
+        fetchAutoplayRecommendation(true);
       } else {
         setIsPlaying(false);
       }
@@ -968,24 +1160,36 @@ export default function App() {
     const { queue: currentQueue, currentSong: activeSong, activeRoom: currentRoom, isHost: currentIsHost } = stateRef.current;
     if (currentQueue.length === 0) return;
 
+    // Spotify-style rewind: if played > 3 seconds, rewind to start without recording a skip
+    if (playerRef.current && playerRef.current.getCurrentTime && playerRef.current.getCurrentTime() > 3) {
+      playerRef.current.seekTo(0);
+      setCurrentTime(0);
+      // Reset session stats so the replay can be tracked fresh to completion
+      if (listenSessionRef.current) {
+        listenSessionRef.current.startTime = Date.now();
+        listenSessionRef.current.lastProgressReport = Date.now();
+        listenSessionRef.current.lastReportedSeconds = 0;
+        listenSessionRef.current.completed = false;
+      }
+      return;
+    }
+
     if (currentRoom && !currentIsHost) {
       const currentIdx = currentQueue.findIndex(s => s.id === activeSong?.id);
       if (currentIdx > 0) {
+        checkAndSendSkip();
         playSong(currentQueue[currentIdx - 1]);
       }
       return;
     }
 
-    if (playerRef.current && playerRef.current.getCurrentTime && playerRef.current.getCurrentTime() > 3) {
-      playerRef.current.seekTo(0);
-      setCurrentTime(0);
-      return;
-    }
-
+    // Navigating away to the previous track is a true track change
     const currentIdx = currentQueue.findIndex(s => s.id === activeSong?.id);
     if (currentIdx > 0) {
+      checkAndSendSkip();
       playSong(currentQueue[currentIdx - 1]);
     } else if (currentIdx === 0 && repeat === 'all') {
+      checkAndSendSkip();
       playSong(currentQueue[currentQueue.length - 1]);
     }
   };
@@ -1027,7 +1231,184 @@ export default function App() {
   };
 
   // Favorites Operation with automatic Supabase Cloud Sync
+
+  // ── Listening Event Tracking ─────────────────────────────────────────────
+  /**
+   * Send a listening event to the backend recommendation engine.
+   * Fire-and-forget: errors are swallowed — never crash the player.
+   */
+  const sendListenEvent = (eventType, overrides = {}, targetSong = null) => {
+    // Strictly authenticated: guests produce ZERO backend listening event records
+    if (!sessionRef.current?.user?.id) {
+      return;
+    }
+    const song = targetSong || stateRef.current.currentSong;
+    if (!song?.id) return;
+
+    // Retrieve real access token from application's active session
+    let authHeader = {};
+    const token = sessionRef.current?.access_token;
+    if (token) {
+      authHeader = { 'Authorization': `Bearer ${token}` };
+    }
+
+    const payload = {
+      song_id:         song.id,
+      song_data:       { id: song.id, title: song.title, artist: song.artist, thumbnailUrl: song.thumbnailUrl, duration: song.duration },
+      event_type:      eventType,
+      listen_seconds:  overrides.listen_seconds ?? null,
+      listen_fraction: overrides.listen_fraction ?? null,
+      metadata:        overrides.metadata ?? {},
+    };
+
+    fetch(`${API_BASE_URL}/api/listening-events`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeader },
+      body: JSON.stringify(payload),
+    }).catch(() => {}); // intentionally silent — never crash the player
+  };
+
+  /**
+   * Detects if the current song was skipped before completion.
+   * Only counts as a skip if played for >= 5 seconds and listened to < 80%.
+   */
+  const checkAndSendSkip = () => {
+    if (listenSessionRef.current && !listenSessionRef.current.completed && playerRef.current && playerRef.current.getCurrentTime) {
+      try {
+        const cur = playerRef.current.getCurrentTime() || 0;
+        const dur = playerRef.current.getDuration() || 0;
+        if (cur >= 5 && dur > 0 && (cur / dur) < 0.8) {
+          const prevSec = listenSessionRef.current.lastReportedSeconds || 0;
+          const delta = cur > prevSec ? cur - prevSec : 0;
+          sendListenEvent('song_skipped', {
+            listen_seconds: Math.round(delta * 10) / 10,
+            listen_fraction: cur / dur,
+            metadata: { reason: 'user_skip', position: cur }
+          });
+        }
+      } catch (e) {}
+      listenSessionRef.current.completed = true;
+    }
+  };
+
+  /**
+   * Called when the queue is exhausted or approaching end and autoplay is enabled.
+   * Fetches recommended songs and appends them to the queue.
+   * If playImmediately is true, starts playing the first recommended song immediately.
+   * Guards against concurrent fetches and stale state overwrites.
+   */
+  const fetchAutoplayRecommendation = async (playImmediately = false) => {
+    if (isAutoplayFetchingRef.current) return;
+    if (!autoplayEnabledRef.current) return;
+    isAutoplayFetchingRef.current = true;
+    try {
+      const activeArtists = (preferences?.artists || []).map(a => typeof a === 'string' ? a : a.name).filter(Boolean);
+      const activeGenres  = preferences?.genres || [];
+      const activeMoods   = preferences?.moods  || [];
+
+      const { queue: currentQueue, currentSong: activeSong } = stateRef.current;
+      const excludeIds = [
+        ...(currentQueue || []).map(s => s.id),
+        ...recentlyPlayed.slice(0, 10).map(s => s.id),
+      ].filter(Boolean);
+
+      const params = new URLSearchParams();
+      if (activeSong?.id) params.set('current_song_id', activeSong.id);
+      if (excludeIds.length) params.set('exclude_ids', excludeIds.join(','));
+      if (activeGenres.length)  params.set('genres',  activeGenres.join(','));
+      if (activeMoods.length)   params.set('moods',   activeMoods.join(','));
+      if (activeArtists.length) params.set('artists', activeArtists.slice(0, 3).join(','));
+      params.set('limit', '3');
+
+      let authHeader = {};
+      const token = sessionRef.current?.access_token;
+      if (token) {
+        authHeader = { 'Authorization': `Bearer ${token}` };
+      }
+
+      const res = await fetch(`${API_BASE_URL}/api/recommendations/next?${params.toString()}`, { headers: authHeader });
+      if (!res.ok) {
+        if (playImmediately) setIsPlaying(false);
+        return;
+      }
+      const data = await res.json();
+      const songs = (data.songs || []).filter(s => s?.id);
+      if (!songs.length) {
+        if (playImmediately) setIsPlaying(false);
+        return;
+      }
+
+      let nextSongToPlay = null;
+      setQueue(prev => {
+        const existingIds = new Set(prev.map(s => s.id));
+        const toAdd = songs.filter(s => !existingIds.has(s.id));
+        if (!toAdd.length) return prev;
+        const updated = [...prev, ...toAdd];
+        try { localStorage.setItem('listenup_queue', JSON.stringify(updated)); } catch {}
+        if (playImmediately && toAdd.length > 0) {
+          nextSongToPlay = toAdd[0];
+        }
+        return updated;
+      });
+
+      // Avoid calling playSong() here which would re-slice the queue with a stale closure.
+      // Setting currentSong triggers the video player loader naturally without overwriting queue!
+      if (playImmediately && nextSongToPlay) {
+        if (!autoplayEnabledRef.current) return;
+        setCurrentSong(nextSongToPlay);
+        setIsBuffering(true);
+        setIsPlaying(true);
+      }
+    } catch (err) {
+      console.warn('Autoplay recommendation fetch failed:', err);
+      if (playImmediately) setIsPlaying(false);
+    } finally {
+      isAutoplayFetchingRef.current = false;
+    }
+  };
+
+  /**
+   * Fetch personalised home screen recommendation sections from the backend.
+   * Called on mount and when user preferences change.
+   */
+  const fetchHomeRecoSections = async () => {
+    setHomeRecoLoading(true);
+    try {
+      const activeArtists = (preferences?.artists || []).map(a => typeof a === 'string' ? a : a.name).filter(Boolean);
+      const reqArtists = activeArtists.length > 0 ? activeArtists : ['Arijit Singh', 'Diljit Dosanjh', 'The Weeknd'];
+      const reqGenres  = (preferences?.genres || []).length > 0 ? preferences.genres : ['bollywood', 'pop'];
+      const reqMoods   = (preferences?.moods  || []).length > 0 ? preferences.moods  : ['chill'];
+
+      let authHeader = {};
+      const token = sessionRef.current?.access_token;
+      if (token) {
+        authHeader = { 'Authorization': `Bearer ${token}` };
+      }
+
+      const res = await fetch(`${API_BASE_URL}/api/recommendations/home`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeader },
+        body: JSON.stringify({ genres: reqGenres, moods: reqMoods, artists: reqArtists }),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data && Array.isArray(data.made_for_you)) {
+        setHomeRecoSections(data);
+      }
+    } catch (err) {
+      console.warn('Home recommendations fetch failed:', err);
+    } finally {
+      setHomeRecoLoading(false);
+    }
+  };
+
   const toggleFavorite = async (song) => {
+    if (!user?.id) {
+      requireAuth(() => toggleFavorite(song), {
+        message: 'Log in to like songs and save favorites.'
+      });
+      return;
+    }
     const isAlreadyFav = favorites.some(s => s.id === song.id);
     let newFavs;
     if (isAlreadyFav) {
@@ -1036,10 +1417,21 @@ export default function App() {
       newFavs = [...favorites, song];
     }
     setFavorites(newFavs);
-    localStorage.setItem('listenup_favorites', JSON.stringify(newFavs));
+    try {
+      localStorage.setItem(`listenup_favorites_${user.id}`, JSON.stringify(newFavs));
+    } catch {}
 
-    // Cloud sync if authenticated
+    // Record listening event for recommendation scoring
+    sendListenEvent(isAlreadyFav ? 'song_unliked' : 'song_liked', { metadata: { source: 'favorites_toggle' } }, song);
+
+    // Database cloud sync if authenticated
     if (user?.id && isSupabaseConfigured) {
+      // 1. Always persist to Supabase Auth database (guaranteed cloud storage)
+      supabase.auth.updateUser({
+        data: { favorites: newFavs }
+      }).catch(err => console.warn('Favorite user_metadata sync warning:', err));
+
+      // 2. Also sync to user_favorites relational table if present
       try {
         if (isAlreadyFav) {
           await supabase
@@ -1057,24 +1449,38 @@ export default function App() {
             }, { onConflict: 'user_id, song_id' });
         }
       } catch (err) {
-        console.warn('Favorite cloud sync error:', err);
+        console.warn('Favorite cloud table sync error (saved in DB metadata):', err);
       }
     }
   };
 
   // Playlists Operations with automatic Supabase Cloud Sync
   const createPlaylist = async (name) => {
+    if (!user?.id) {
+      requireAuth((authedUser) => createPlaylist(name), {
+        message: 'Log in to create and manage playlists.'
+      });
+      return null;
+    }
     const cleanName = name.trim();
-    if (!cleanName) return;
+    if (!cleanName) return null;
     const tempId = 'pl_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
     const newPlaylist = {
       id: tempId,
       name: cleanName,
       songs: []
     };
-    setPlaylists(prev => [...prev, newPlaylist]);
+    const nextPlaylists = [...playlists, newPlaylist];
+    setPlaylists(nextPlaylists);
+    try {
+      localStorage.setItem(`listenup_playlists_${user.id}`, JSON.stringify(nextPlaylists));
+    } catch {}
 
     if (user?.id && isSupabaseConfigured) {
+      // 1. Immediately persist to Supabase Auth database
+      supabase.auth.updateUser({ data: { playlists: nextPlaylists } }).catch(() => {});
+
+      // 2. Also sync to user_playlists table if present
       try {
         const { data, error } = await supabase
           .from('user_playlists')
@@ -1086,77 +1492,180 @@ export default function App() {
           .select()
           .single();
         if (!error && data) {
-          setPlaylists(prev => prev.map(p => p.id === tempId ? { ...p, id: data.id } : p));
+          const withCloudId = nextPlaylists.map(p => p.id === tempId ? { ...p, id: data.id } : p);
+          setPlaylists(withCloudId);
+          try {
+            localStorage.setItem(`listenup_playlists_${user.id}`, JSON.stringify(withCloudId));
+          } catch {}
+          supabase.auth.updateUser({ data: { playlists: withCloudId } }).catch(() => {});
+          return data;
         }
       } catch (err) {
         console.warn('Playlist cloud creation error:', err);
       }
     }
+    return newPlaylist;
   };
 
   const deletePlaylist = async (playlistId) => {
-    setPlaylists(prev => prev.filter(pl => pl.id !== playlistId));
+    if (!user?.id) {
+      requireAuth(null, { message: 'Log in to manage your playlists.' });
+      return;
+    }
+    const nextPlaylists = playlists.filter(pl => pl.id !== playlistId);
+    setPlaylists(nextPlaylists);
+    try {
+      localStorage.setItem(`listenup_playlists_${user.id}`, JSON.stringify(nextPlaylists));
+    } catch {}
     if (activePlaylistId === playlistId) {
       setActivePlaylistId(null);
     }
 
     if (user?.id && isSupabaseConfigured) {
-      try {
-        await supabase
-          .from('user_playlists')
-          .delete()
-          .eq('user_id', user.id)
-          .eq('id', playlistId);
-      } catch (err) {
-        console.warn('Playlist cloud deletion error:', err);
+      // 1. Immediately persist to Supabase Auth database
+      supabase.auth.updateUser({ data: { playlists: nextPlaylists } }).catch(() => {});
+
+      // 2. Also sync to user_playlists table if present
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(playlistId);
+      if (isUuid) {
+        try {
+          await supabase
+            .from('user_playlists')
+            .delete()
+            .eq('user_id', user.id)
+            .eq('id', playlistId);
+        } catch (err) {
+          console.warn('Playlist cloud deletion error:', err);
+        }
       }
     }
   };
 
   const addSongToPlaylist = async (playlistId, song) => {
+    if (!user?.id) {
+      requireAuth(() => addSongToPlaylist(playlistId, song), {
+        message: 'Log in to add songs to playlists.'
+      });
+      return { success: false, requireAuth: true };
+    }
     let targetPlaylist = null;
-    setPlaylists(prev => prev.map(pl => {
-      if (pl.id !== playlistId) return pl;
-      if (pl.songs.some(s => s.id === song.id)) return pl;
-      const updated = { ...pl, songs: [...pl.songs, song] };
-      targetPlaylist = updated;
-      return updated;
-    }));
+    let alreadyIn = false;
+    let nextPlaylists = [];
+    setPlaylists(prev => {
+      nextPlaylists = prev.map(pl => {
+        if (pl.id !== playlistId) return pl;
+        if (pl.songs.some(s => s.id === song.id)) {
+          alreadyIn = true;
+          return pl;
+        }
+        const updated = { ...pl, songs: [...pl.songs, song] };
+        targetPlaylist = updated;
+        return updated;
+      });
+      return nextPlaylists;
+    });
 
+    if (alreadyIn) {
+      return { success: false, alreadyExists: true };
+    }
+
+    try {
+      localStorage.setItem(`listenup_playlists_${user.id}`, JSON.stringify(nextPlaylists));
+    } catch {}
+
+    // Record listening event for recommendation scoring
+    sendListenEvent('playlist_added', { metadata: { playlistId } }, song);
+
+    // Database cloud sync if authenticated
     if (user?.id && isSupabaseConfigured) {
+      // 1. Immediately persist to Supabase Auth database
+      supabase.auth.updateUser({ data: { playlists: nextPlaylists } }).catch(() => {});
+
+      // 2. Also sync to user_playlists table if present
       try {
         const currentPl = targetPlaylist || playlists.find(p => p.id === playlistId);
         const newSongs = currentPl && !currentPl.songs.some(s => s.id === song.id)
           ? [...currentPl.songs, song]
           : (currentPl?.songs || [song]);
-        await supabase
-          .from('user_playlists')
-          .update({ songs: newSongs, updated_at: new Date().toISOString() })
-          .eq('user_id', user.id)
-          .eq('id', playlistId);
+        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(playlistId);
+
+        if (isUuid) {
+          const { error } = await supabase
+            .from('user_playlists')
+            .update({ songs: newSongs, updated_at: new Date().toISOString() })
+            .eq('user_id', user.id)
+            .eq('id', playlistId);
+          if (error) {
+            console.warn('Cloud playlist update error (saved locally):', error.message || error);
+          }
+        } else {
+          // If it was created locally with tempId, attempt to insert as a cloud playlist
+          const { data: inserted, error: insertError } = await supabase
+            .from('user_playlists')
+            .insert({
+              user_id: user.id,
+              name: currentPl?.name || 'Playlist',
+              songs: newSongs
+            })
+            .select()
+            .single();
+
+          if (!insertError && inserted?.id) {
+            setPlaylists(prev => {
+              const withUuid = prev.map(p => p.id === playlistId ? { ...p, id: inserted.id } : p);
+              try {
+                localStorage.setItem(`listenup_playlists_${user.id}`, JSON.stringify(withUuid));
+              } catch {}
+              supabase.auth.updateUser({ data: { playlists: withUuid } }).catch(() => {});
+              return withUuid;
+            });
+          } else if (insertError) {
+            console.warn('Cloud playlist insert error (saved locally):', insertError.message || insertError);
+          }
+        }
       } catch (err) {
-        console.warn('Add song to playlist cloud error:', err);
+        console.warn('Add song to playlist cloud sync error (saved in DB metadata):', err);
       }
     }
+    return { success: true };
   };
 
   const removeSongFromPlaylist = async (playlistId, songId) => {
+    if (!user?.id) {
+      requireAuth(null, { message: 'Log in to manage your playlists.' });
+      return;
+    }
+    let filteredPlaylists = [];
     let filteredSongs = [];
-    setPlaylists(prev => prev.map(pl => {
-      if (pl.id !== playlistId) return pl;
-      filteredSongs = pl.songs.filter(s => s.id !== songId);
-      return { ...pl, songs: filteredSongs };
-    }));
+    setPlaylists(prev => {
+      filteredPlaylists = prev.map(pl => {
+        if (pl.id !== playlistId) return pl;
+        filteredSongs = pl.songs.filter(s => s.id !== songId);
+        return { ...pl, songs: filteredSongs };
+      });
+      return filteredPlaylists;
+    });
+    try {
+      localStorage.setItem(`listenup_playlists_${user.id}`, JSON.stringify(filteredPlaylists));
+    } catch {}
 
     if (user?.id && isSupabaseConfigured) {
-      try {
-        await supabase
-          .from('user_playlists')
-          .update({ songs: filteredSongs, updated_at: new Date().toISOString() })
-          .eq('user_id', user.id)
-          .eq('id', playlistId);
-      } catch (err) {
-        console.warn('Remove song from playlist cloud error:', err);
+      // 1. Immediately persist to Supabase Auth database
+      supabase.auth.updateUser({ data: { playlists: filteredPlaylists } }).catch(() => {});
+
+      // 2. Also sync to user_playlists table if present
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(playlistId);
+      if (isUuid) {
+        try {
+          const { error } = await supabase
+            .from('user_playlists')
+            .update({ songs: filteredSongs, updated_at: new Date().toISOString() })
+            .eq('user_id', user.id)
+            .eq('id', playlistId);
+          if (error) console.warn('Remove song from playlist cloud error:', error.message || error);
+        } catch (err) {
+          console.warn('Remove song from playlist cloud error (saved in DB metadata):', err);
+        }
       }
     }
   };
@@ -1180,9 +1689,39 @@ export default function App() {
   };
 
   const openCreatePlaylistModal = () => {
+    if (!user?.id) {
+      requireAuth(() => {
+        if (createPlaylistDialogRef.current) {
+          createPlaylistDialogRef.current.showModal();
+        }
+      }, {
+        message: 'Log in to create and manage playlists.'
+      });
+      return;
+    }
     if (createPlaylistDialogRef.current) {
       createPlaylistDialogRef.current.showModal();
     }
+  };
+
+  const handleOpenProfileModal = () => {
+    if (!user?.id) {
+      requireAuth(() => setIsProfileModalOpen(true), {
+        message: 'Log in to customize your profile and music preferences.'
+      });
+      return;
+    }
+    setIsProfileModalOpen(true);
+  };
+
+  const handleOpenAddToPlaylist = (song) => {
+    if (!user?.id) {
+      requireAuth(() => setPlaylistModalSong(song), {
+        message: 'Log in to add songs to playlists.'
+      });
+      return;
+    }
+    setPlaylistModalSong(song);
   };
 
   const closeCreatePlaylistModal = () => {
@@ -1328,37 +1867,74 @@ export default function App() {
     }
   };
 
+  // Dynamic popular artists fetched from Deezer, initialized with verified Deezer starter catalog
+  const [dynamicPopularArtists, setDynamicPopularArtists] = useState(() => {
+    return STARTER_ARTISTS.map(sa => ({
+      id: sa.id,
+      name: sa.name,
+      img: sa.imageUrl,
+      query: `${sa.name} best songs official`,
+      deezerUrl: null
+    }));
+  });
+
+  // Fetch top Deezer artists on mount for dynamic Home shelf
+  useEffect(() => {
+    let cancelled = false;
+    async function loadPopularDeezer() {
+      try {
+        const res = await searchArtists({ query: '', limit: 18, index: 0 });
+        if (!cancelled && res?.artists && res.artists.length > 0) {
+          const mapped = res.artists.map(a => ({
+            id: a.id,
+            name: a.name,
+            img: a.imageMedium || a.image || a.imageLarge,
+            query: `${a.name} best songs official`,
+            deezerUrl: a.deezerUrl
+          }));
+          setDynamicPopularArtists(mapped);
+        }
+      } catch (err) {
+        console.warn('Could not load dynamic Deezer popular artists for home:', err);
+      }
+    }
+    loadPopularDeezer();
+    return () => { cancelled = true; };
+  }, []);
+
   // Personalized Artists Shelf: Prioritizes user's favourite artists
   const displayedArtists = useMemo(() => {
-    const baseList = [
-      { name: 'Arijit Singh', img: 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300&auto=format&fit=crop&q=80', query: 'arijit singh best songs' },
-      { name: 'Shreya Ghoshal', img: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=300&auto=format&fit=crop&q=80', query: 'shreya ghoshal hit songs' },
-      { name: 'Diljit Dosanjh', img: 'https://images.unsplash.com/photo-1519085360753-af0119f7cbe7?w=300&auto=format&fit=crop&q=80', query: 'diljit dosanjh top tracks' },
-      { name: 'A. R. Rahman', img: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=300&auto=format&fit=crop&q=80', query: 'ar rahman hit songs' },
-      { name: 'Sonu Nigam', img: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=300&auto=format&fit=crop&q=80', query: 'sonu nigam evergreen songs' },
-      { name: 'Sunidhi Chauhan', img: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=300&auto=format&fit=crop&q=80', query: 'sunidhi chauhan hit songs' },
-      { name: 'Ayushmann', img: 'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=300&auto=format&fit=crop&q=80', query: 'ayushmann khurrana songs' },
-      { name: 'Jubin Nautiyal', img: 'https://images.unsplash.com/photo-1492562080023-ab3db95bfbce?w=300&auto=format&fit=crop&q=80', query: 'jubin nautiyal best songs' }
-    ];
+    const userFavList = preferences?.artists || [];
 
-    if (!preferences?.artists || preferences.artists.length === 0) {
-      return baseList;
+    if (userFavList.length === 0) {
+      return dynamicPopularArtists;
     }
 
-    const userFavs = preferences.artists.map(art => {
+    const userFavs = userFavList.map(art => {
       const name = typeof art === 'string' ? art : art.name;
-      const starter = STARTER_ARTISTS.find(sa => sa.name.toLowerCase() === name.toLowerCase());
+      // Match from dynamic Deezer artists or starter catalog for exact photo
+      const matched = dynamicPopularArtists.find(da => da.name.toLowerCase() === name.toLowerCase())
+        || STARTER_ARTISTS.find(sa => sa.name.toLowerCase() === name.toLowerCase());
+
+      const imgUrl = (typeof art === 'object' && (art.imageMedium || art.image || art.imageLarge || art.imageUrl))
+        || matched?.img
+        || matched?.imageUrl
+        || null;
+
       return {
+        id: (typeof art === 'object' && art.id) || matched?.id,
         name,
-        img: starter?.imageUrl || (typeof art === 'object' && art.imageUrl) || 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300&auto=format&fit=crop&q=80',
+        img: imgUrl,
         query: `${name} best songs official`,
         isUserFav: true
       };
     });
 
-    const remaining = baseList.filter(b => !userFavs.some(u => u.name.toLowerCase() === b.name.toLowerCase()));
+    const remaining = dynamicPopularArtists.filter(b => 
+      !userFavs.some(u => u.name.toLowerCase() === b.name.toLowerCase())
+    );
     return [...userFavs, ...remaining];
-  }, [preferences?.artists]);
+  }, [preferences?.artists, dynamicPopularArtists]);
 
   return (
     <div className="flex flex-col h-[100dvh] w-screen bg-[#08080D] text-[#F5F5F7] overflow-hidden relative font-sans select-none antialiased">
@@ -1907,72 +2483,17 @@ export default function App() {
                     );
                   }
 
-                  return displaySongs.map((song) => {
-                    const isCurrent = currentSong?.id === song.id;
-
-                    return (
-                      <div
-                        key={song.id}
-                        onClick={() => playSongFromList(song, displaySongs)}
-                        className="w-36 sm:w-44 flex-shrink-0 group cursor-pointer"
-                      >
-                        <div className={`relative aspect-square w-full rounded-2xl overflow-hidden bg-[#101017] border shadow-lg transition-all ${
-                          isCurrent 
-                            ? 'border-[#D5F36A] shadow-[0_0_18px_rgba(213,243,106,0.3)] ring-1 ring-[#D5F36A]' 
-                            : 'border-white/[0.08] group-hover:border-[#D5F36A]/50'
-                        }`}>
-                          <img
-                            src={song.thumbnailUrl}
-                            alt={song.title}
-                            loading="lazy"
-                            onError={(e) => {
-                              e.currentTarget.src = 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=400&auto=format&fit=crop&q=80';
-                            }}
-                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500 ease-out"
-                          />
-                          <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/30 to-transparent pointer-events-none" />
-                          
-                          {/* Duration Badge / Playing Equalizer Animation */}
-                          {isCurrent && isPlaying ? (
-                            <div className="absolute top-2 right-2 bg-black/85 backdrop-blur-md px-2 py-1 rounded-full flex items-center gap-1 border border-[#D5F36A]/40 shadow-sm pointer-events-none">
-                              <span className="eq-bar !h-3"></span>
-                              <span className="eq-bar !h-4"></span>
-                              <span className="eq-bar !h-2"></span>
-                            </div>
-                          ) : song.duration ? (
-                            <span className="absolute top-2 right-2 text-[10px] font-mono font-semibold bg-black/75 backdrop-blur-md px-1.5 py-0.5 rounded text-slate-300 pointer-events-none">
-                              {formatTime(song.duration)}
-                            </span>
-                          ) : null}
-
-                          {/* Hover Play Button */}
-                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                            <div className="w-10 h-10 rounded-full bg-[#D5F36A] text-black flex items-center justify-center shadow-lg shadow-[#D5F36A]/30 transform scale-75 group-hover:scale-100 transition-transform">
-                              {isCurrent && isPlaying ? (
-                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
-                                  <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
-                                </svg>
-                              ) : (
-                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5 translate-x-0.5">
-                                  <path d="M8 5v14l11-7z" />
-                                </svg>
-                              )}
-                            </div>
-                          </div>
-
-                          {/* Bottom Card Title and Artist */}
-                          <div className="absolute bottom-2.5 left-2.5 right-2.5">
-                            <p className="text-xs font-bold text-white truncate drop-shadow" title={song.title}>
-                              {song.title}
-                            </p>
-                            <p className="text-[10px] text-[#9999A6] font-medium truncate mt-0.5" title={song.artist}>
-                              {song.artist || 'Playback'}
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  });
+                  return displaySongs.map((song) => (
+                    <SongCard
+                      key={song.id}
+                      song={song}
+                      isCurrent={currentSong?.id === song.id}
+                      isPlaying={isPlaying}
+                      onClick={() => playSongFromList(song, displaySongs)}
+                      onOpenMenu={(s, rect) => setActiveContextMenu({ song: s, anchorRect: rect })}
+                      formatTime={formatTime}
+                    />
+                  ));
                 })()}
               </div>
             </section>
@@ -2016,7 +2537,7 @@ export default function App() {
                   </button>
 
                   <button
-                    onClick={() => setIsProfileModalOpen(true)}
+                    onClick={handleOpenProfileModal}
                     className="px-3 py-1.5 rounded-xl bg-[#191922] hover:bg-white/[0.08] border border-white/[0.08] text-xs font-semibold text-[#9999A6] hover:text-[#D5F36A] transition-colors cursor-pointer"
                     title="Update your taste preferences"
                   >
@@ -2067,97 +2588,24 @@ export default function App() {
                   <div className="w-full py-8 text-center text-xs text-[#9999A6] border border-dashed border-white/10 rounded-2xl flex flex-col items-center gap-2">
                     <p>No suggested songs found yet for your current taste.</p>
                     <button
-                      onClick={() => setIsProfileModalOpen(true)}
+                      onClick={handleOpenProfileModal}
                       className="px-4 py-1.5 rounded-xl bg-[#D5F36A] text-black font-bold text-xs"
                     >
                       Set Up Your Preferences
                     </button>
                   </div>
                 ) : (
-                  suggestedSongs.map(song => {
-                    const isCurrent = currentSong?.id === song.id;
-                    const isFav = favorites.some(s => s.id === song.id);
-
-                    return (
-                      <div
-                        key={song.id}
-                        onClick={() => playSongFromList(song, suggestedSongs)}
-                        className="w-36 sm:w-44 flex-shrink-0 group cursor-pointer"
-                      >
-                        <div className={`relative aspect-square w-full rounded-2xl overflow-hidden bg-[#101017] border shadow-lg transition-all ${
-                          isCurrent 
-                            ? 'border-[#D5F36A] shadow-[0_0_18px_rgba(213,243,106,0.3)] ring-1 ring-[#D5F36A]' 
-                            : 'border-white/[0.08] group-hover:border-[#D5F36A]/50'
-                        }`}>
-                          <img
-                            src={song.thumbnailUrl}
-                            alt={song.title}
-                            loading="lazy"
-                            onError={(e) => {
-                              e.currentTarget.src = 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=400&auto=format&fit=crop&q=80';
-                            }}
-                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500 ease-out"
-                          />
-                          <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/30 to-transparent pointer-events-none" />
-                          
-                          {/* Duration Badge / Playing Equalizer Animation */}
-                          {isCurrent && isPlaying ? (
-                            <div className="absolute top-2 right-2 bg-black/85 backdrop-blur-md px-2 py-1 rounded-full flex items-center gap-1 border border-[#D5F36A]/40 shadow-sm pointer-events-none">
-                              <span className="eq-bar !h-3"></span>
-                              <span className="eq-bar !h-4"></span>
-                              <span className="eq-bar !h-2"></span>
-                            </div>
-                          ) : song.duration ? (
-                            <span className="absolute top-2 right-2 text-[10px] font-mono font-semibold bg-black/75 backdrop-blur-md px-1.5 py-0.5 rounded text-slate-300 pointer-events-none">
-                              {formatTime(song.duration)}
-                            </span>
-                          ) : null}
-
-                          {/* Quick Favorite Button */}
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              toggleFavorite(song);
-                            }}
-                            className={`absolute top-2 left-2 p-1.5 rounded-full backdrop-blur-md transition-all cursor-pointer ${
-                              isFav ? 'bg-rose-500 text-white' : 'bg-black/60 text-slate-300 opacity-0 group-hover:opacity-100 hover:text-white'
-                            }`}
-                            title={isFav ? "Remove from favorites" : "Add to favorites"}
-                          >
-                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill={isFav ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5">
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12z" />
-                            </svg>
-                          </button>
-
-                          {/* Hover Play Button */}
-                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                            <div className="w-10 h-10 rounded-full bg-[#D5F36A] text-black flex items-center justify-center shadow-lg shadow-[#D5F36A]/30 transform scale-75 group-hover:scale-100 transition-transform active:scale-95">
-                              {isCurrent && isPlaying ? (
-                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
-                                  <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
-                                </svg>
-                              ) : (
-                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5 translate-x-0.5">
-                                  <path d="M8 5v14l11-7z" />
-                                </svg>
-                              )}
-                            </div>
-                          </div>
-
-                          {/* Bottom Card Title and Artist */}
-                          <div className="absolute bottom-2.5 left-2.5 right-2.5">
-                            <p className="text-xs font-bold text-white truncate drop-shadow" title={song.title}>
-                              {song.title}
-                            </p>
-                            <p className="text-[10px] text-[#9999A6] font-medium truncate mt-0.5" title={song.artist}>
-                              {song.artist || 'Playback'}
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })
+                  suggestedSongs.map(song => (
+                    <SongCard
+                      key={song.id}
+                      song={song}
+                      isCurrent={currentSong?.id === song.id}
+                      isPlaying={isPlaying}
+                      onClick={() => playSongFromList(song, suggestedSongs)}
+                      onOpenMenu={(s, rect) => setActiveContextMenu({ song: s, anchorRect: rect })}
+                      formatTime={formatTime}
+                    />
+                  ))
                 )}
               </div>
             </section>
@@ -2323,28 +2771,106 @@ export default function App() {
                     }}
                     className="flex flex-col items-center gap-2 flex-shrink-0 group cursor-pointer relative"
                   >
-                    <div className={`w-18 h-18 sm:w-20 sm:h-20 rounded-full overflow-hidden p-0.5 border-2 transition-all bg-[#101017] ${
+                    <div className={`w-18 h-18 sm:w-20 sm:h-20 rounded-full overflow-hidden p-0.5 border-2 transition-all bg-[#101017] flex items-center justify-center relative ${
                       artist.isUserFav 
                         ? 'border-[#D5F36A] shadow-[0_0_15px_rgba(213,243,106,0.35)]' 
                         : 'border-white/[0.08] group-hover:border-[#D5F36A] group-hover:shadow-[0_0_15px_rgba(213,243,106,0.3)]'
                     }`}>
-                      <img
-                        src={artist.img}
-                        alt={artist.name}
-                        loading="lazy"
-                        onError={(e) => {
-                          e.currentTarget.src = 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=200&auto=format&fit=crop&q=80';
-                        }}
-                        className="w-full h-full rounded-full object-cover group-hover:scale-105 transition-transform"
-                      />
+                      {artist.img ? (
+                        <img
+                          src={artist.img}
+                          alt={artist.name}
+                          loading="lazy"
+                          onError={(e) => {
+                            e.currentTarget.style.display = 'none';
+                            const fallback = e.currentTarget.parentElement?.querySelector('.artist-avatar-fallback');
+                            if (fallback) fallback.classList.remove('hidden');
+                          }}
+                          className="w-full h-full rounded-full object-cover group-hover:scale-105 transition-transform"
+                        />
+                      ) : null}
+                      <div 
+                        className={`artist-avatar-fallback w-full h-full rounded-full bg-gradient-to-br from-[#1c1c28] to-[#101017] flex items-center justify-center font-heading font-extrabold text-[#D5F36A] text-xs sm:text-sm border border-[#D5F36A]/20 ${artist.img ? 'hidden' : ''}`}
+                      >
+                        {getArtistInitials(artist.name)}
+                      </div>
                     </div>
-                    <span className="text-[11px] sm:text-xs font-semibold text-[#9999A6] group-hover:text-[#D5F36A] truncate max-w-[85px] text-center" title={artist.name}>
+                    <span className={`text-[11px] sm:text-xs font-semibold truncate max-w-[85px] text-center transition-colors ${
+                      artist.isUserFav ? 'text-[#D5F36A] font-bold' : 'text-[#9999A6] group-hover:text-[#D5F36A]'
+                    }`} title={artist.name}>
                       {artist.name}
                     </span>
                   </div>
                 ))}
               </div>
             </section>
+
+            {/* Personalized Recommendation Sections: Because You Listened To [Artist] */}
+            {homeRecoSections.because_you && homeRecoSections.because_you.length > 0 && homeRecoSections.because_you.map((sec, sIdx) => {
+              if (!sec.songs || sec.songs.length === 0) return null;
+              return (
+                <section key={`reco-sec-${sIdx}`} className="space-y-3.5">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-heading text-lg md:text-xl font-bold text-white tracking-tight">
+                        Because you love {sec.artist}
+                      </h3>
+                      <span className="text-[10px] font-mono font-medium text-[#D5F36A] bg-[#D5F36A]/10 border border-[#D5F36A]/20 px-2 py-0.5 rounded-full flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#D5F36A] animate-pulse"></span>
+                        Recommended
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex gap-3.5 overflow-x-auto hide-scrollbar pb-1">
+                    {sec.songs.map((song) => (
+                      <SongCard
+                        key={`because-you-${song.id}`}
+                        song={song}
+                        isCurrent={currentSong?.id === song.id}
+                        isPlaying={isPlaying}
+                        onClick={() => playSongFromList(song, sec.songs)}
+                        onOpenMenu={(s, rect) => setActiveContextMenu({ song: s, anchorRect: rect })}
+                        formatTime={formatTime}
+                      />
+                    ))}
+                  </div>
+                </section>
+              );
+            })}
+
+            {/* Personalized Recommendation Sections: Discover More */}
+            {homeRecoSections.discover_more && homeRecoSections.discover_more.length > 0 && (
+              <section className="space-y-3.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <h3 className="font-heading text-lg md:text-xl font-bold text-white tracking-tight">
+                      Discover More
+                    </h3>
+                    <span className="text-[10px] font-mono font-medium text-purple-400 bg-purple-500/10 border border-purple-500/20 px-2 py-0.5 rounded-full flex items-center gap-1">
+                      <span>✨</span>
+                      Fresh Picks
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex gap-3.5 overflow-x-auto hide-scrollbar pb-1">
+                  {homeRecoSections.discover_more.map((song) => (
+                    <SongCard
+                      key={`discover-more-${song.id}`}
+                      song={song}
+                      playlist={homeRecoSections.discover_more}
+                      isCurrent={currentSong?.id === song.id}
+                      isPlaying={isPlaying}
+                      isFav={favorites.some((s) => s.id === song.id)}
+                      onPlay={(s, pl) => playSongFromList(s, pl)}
+                      onToggleFavorite={(s) => toggleFavorite(s)}
+                      onOpenContextMenu={(s, rect) => setActiveContextMenu({ song: s, anchorRect: rect })}
+                    />
+                  ))}
+                </div>
+              </section>
+            )}
 
             {/* Curated Music Category Rows from API */}
             {homeLoading ? (
@@ -2434,90 +2960,19 @@ export default function App() {
                           id={`scroll-${key}`}
                           className="flex overflow-x-auto gap-3.5 pb-2 scroll-smooth hide-scrollbar px-1"
                         >
-                          {songs.map((song) => {
-                            const isCurrent = currentSong?.id === song.id;
-                            const isFav = favorites.some(s => s.id === song.id);
-
-                            return (
-                              <div 
-                                key={song.id} 
-                                className="w-36 sm:w-44 flex-shrink-0 group cursor-pointer"
-                                onClick={() => playSongFromList(song, songs)}
-                              >
-                                <div className={`relative aspect-square w-full rounded-2xl overflow-hidden bg-[#101017] border shadow-lg transition-all ${
-                                  isCurrent 
-                                    ? 'border-[#D5F36A] shadow-[0_0_18px_rgba(213,243,106,0.3)] ring-1 ring-[#D5F36A]' 
-                                    : 'border-white/[0.08] group-hover:border-[#D5F36A]/50'
-                                }`}>
-                                  <img 
-                                    src={song.thumbnailUrl} 
-                                    alt={song.title} 
-                                    loading="lazy"
-                                    onError={(e) => {
-                                      e.currentTarget.src = 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=400&auto=format&fit=crop&q=80';
-                                    }}
-                                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500 ease-out" 
-                                  />
-                                  <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/30 to-transparent pointer-events-none" />
-
-                                  {/* Duration Badge / Playing Equalizer Animation */}
-                                  {isCurrent && isPlaying ? (
-                                    <div className="absolute top-2 right-2 bg-black/85 backdrop-blur-md px-2 py-1 rounded-full flex items-center gap-1 border border-[#D5F36A]/40 shadow-sm pointer-events-none">
-                                      <span className="eq-bar !h-3"></span>
-                                      <span className="eq-bar !h-4"></span>
-                                      <span className="eq-bar !h-2"></span>
-                                    </div>
-                                  ) : song.duration ? (
-                                    <span className="absolute top-2 right-2 text-[10px] font-mono font-semibold bg-black/75 backdrop-blur-md px-1.5 py-0.5 rounded text-slate-300 pointer-events-none">
-                                      {formatTime(song.duration)}
-                                    </span>
-                                  ) : null}
-
-                                  {/* Quick Favorite Button */}
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      toggleFavorite(song);
-                                    }}
-                                    className={`absolute top-2 left-2 p-1.5 rounded-full backdrop-blur-md transition-all cursor-pointer ${
-                                      isFav ? 'bg-rose-500 text-white' : 'bg-black/60 text-slate-300 opacity-0 group-hover:opacity-100 hover:text-white'
-                                    }`}
-                                    title={isFav ? "Remove from favorites" : "Add to favorites"}
-                                  >
-                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill={isFav ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5">
-                                      <path strokeLinecap="round" strokeLinejoin="round" d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12z" />
-                                    </svg>
-                                  </button>
-
-                                  {/* Hover Play Button */}
-                                  <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                                    <div className="w-10 h-10 rounded-full bg-[#D5F36A] text-black flex items-center justify-center shadow-lg shadow-[#D5F36A]/30 transform scale-75 group-hover:scale-100 transition-transform active:scale-95">
-                                      {isCurrent && isPlaying ? (
-                                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
-                                          <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
-                                        </svg>
-                                      ) : (
-                                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5 translate-x-0.5">
-                                          <path d="M8 5v14l11-7z" />
-                                        </svg>
-                                      )}
-                                    </div>
-                                  </div>
-
-                                  {/* Bottom Card Title and Artist */}
-                                  <div className="absolute bottom-2.5 left-2.5 right-2.5">
-                                    <p className="text-xs font-bold text-white truncate drop-shadow" title={song.title}>
-                                      {song.title}
-                                    </p>
-                                    <p className="text-[10px] text-[#9999A6] font-medium truncate mt-0.5" title={song.artist}>
-                                      {song.artist || 'Playback'}
-                                    </p>
-                                  </div>
-                                </div>
-                              </div>
-                            );
-                          })}
+                          {songs.map((song) => (
+                            <SongCard
+                              key={`${key}-${song.id}`}
+                              song={song}
+                              playlist={songs}
+                              isCurrent={currentSong?.id === song.id}
+                              isPlaying={isPlaying}
+                              isFav={favorites.some((s) => s.id === song.id)}
+                              onPlay={(s, pl) => playSongFromList(s, pl)}
+                              onToggleFavorite={(s) => toggleFavorite(s)}
+                              onOpenContextMenu={(s, rect) => setActiveContextMenu({ song: s, anchorRect: rect })}
+                            />
+                          ))}
                         </div>
                       </div>
                     </div>
@@ -2631,90 +3086,20 @@ export default function App() {
                 </div>
               ) : (
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3.5 sm:gap-4">
-                  {searchResults.map((song) => {
-                    const isCurrent = currentSong?.id === song.id;
-                    const isFav = favorites.some(s => s.id === song.id);
-
-                    return (
-                      <div 
-                        key={song.id} 
-                        onClick={() => playSongFromList(song, searchResults)}
-                        className="group cursor-pointer"
-                      >
-                        <div className={`relative aspect-square w-full rounded-2xl overflow-hidden bg-[#101017] border shadow-lg transition-all ${
-                          isCurrent 
-                            ? 'border-[#D5F36A] shadow-[0_0_18px_rgba(213,243,106,0.3)] ring-1 ring-[#D5F36A]' 
-                            : 'border-white/[0.08] group-hover:border-[#D5F36A]/50'
-                        }`}>
-                          <img 
-                            src={song.thumbnailUrl} 
-                            alt={song.title} 
-                            loading="lazy"
-                            onError={(e) => {
-                              e.currentTarget.src = 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=400&auto=format&fit=crop&q=80';
-                            }}
-                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500 ease-out" 
-                          />
-                          <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/30 to-transparent pointer-events-none" />
-
-                          {/* Duration Badge / Playing Equalizer Animation */}
-                          {isCurrent && isPlaying ? (
-                            <div className="absolute top-2 right-2 bg-black/85 backdrop-blur-md px-2 py-1 rounded-full flex items-center gap-1 border border-[#D5F36A]/40 shadow-sm pointer-events-none">
-                              <span className="eq-bar !h-3"></span>
-                              <span className="eq-bar !h-4"></span>
-                              <span className="eq-bar !h-2"></span>
-                            </div>
-                          ) : song.duration ? (
-                            <span className="absolute top-2 right-2 text-[10px] font-mono font-semibold bg-black/75 backdrop-blur-md px-1.5 py-0.5 rounded text-slate-300 pointer-events-none">
-                              {formatTime(song.duration)}
-                            </span>
-                          ) : null}
-
-                          {/* Quick Favorite Button */}
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              toggleFavorite(song);
-                            }}
-                            className={`absolute top-2 left-2 p-1.5 rounded-full backdrop-blur-md transition-all cursor-pointer ${
-                              isFav ? 'bg-rose-500 text-white' : 'bg-black/60 text-slate-300 opacity-0 group-hover:opacity-100 hover:text-white'
-                            }`}
-                            title={isFav ? "Remove from favorites" : "Add to favorites"}
-                          >
-                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill={isFav ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5">
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12z" />
-                            </svg>
-                          </button>
-
-                          {/* Hover Play Button */}
-                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                            <div className="w-10 h-10 rounded-full bg-[#D5F36A] text-black flex items-center justify-center shadow-lg shadow-[#D5F36A]/30 transform scale-75 group-hover:scale-100 transition-transform active:scale-95">
-                              {isCurrent && isPlaying ? (
-                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
-                                  <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
-                                </svg>
-                              ) : (
-                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5 translate-x-0.5">
-                                  <path d="M8 5v14l11-7z" />
-                                </svg>
-                              )}
-                            </div>
-                          </div>
-
-                          {/* Bottom Card Title and Artist */}
-                          <div className="absolute bottom-2.5 left-2.5 right-2.5">
-                            <p className="text-xs font-bold text-white truncate drop-shadow" title={song.title}>
-                              {song.title}
-                            </p>
-                            <p className="text-[10px] text-[#9999A6] font-medium truncate mt-0.5" title={song.artist}>
-                              {song.artist || 'Playback'}
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
+                  {searchResults.map((song) => (
+                    <SongCard
+                      key={`search-${song.id}`}
+                      song={song}
+                      playlist={searchResults}
+                      isCurrent={currentSong?.id === song.id}
+                      isPlaying={isPlaying}
+                      isFav={favorites.some((s) => s.id === song.id)}
+                      onPlay={(s, pl) => playSongFromList(s, pl)}
+                      onToggleFavorite={(s) => toggleFavorite(s)}
+                      onOpenContextMenu={(s, rect) => setActiveContextMenu({ song: s, anchorRect: rect })}
+                      className="w-full"
+                    />
+                  ))}
                 </div>
               )}
             </div>
@@ -3460,18 +3845,32 @@ export default function App() {
                   </h2>
                   <p className="text-[#9999A6] text-sm mt-1">Your playback history, active session, and up next queue.</p>
                 </div>
-                {(queue.length > 0 || recentlyPlayed.length > 0) && (
+                <div className="flex items-center gap-2">
                   <button
-                    onClick={() => {
-                      clearQueue();
-                      setRecentlyPlayed([]);
-                      localStorage.removeItem('listenup_recently_played');
-                    }}
-                    className="px-4 py-2 text-xs font-semibold text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 rounded-xl transition-all cursor-pointer"
+                    onClick={() => setAutoplayEnabled(!autoplayEnabled)}
+                    className={`px-3 py-2 text-xs font-semibold rounded-xl border transition-all cursor-pointer flex items-center gap-1.5 ${
+                      autoplayEnabled
+                        ? 'bg-[#D5F36A]/10 text-[#D5F36A] border-[#D5F36A]/30 hover:bg-[#D5F36A]/20'
+                        : 'bg-[#191922] text-[#9999A6] border-white/[0.08] hover:text-[#F5F5F7]'
+                    }`}
+                    title="When queue ends, smart recommendations continue playback"
                   >
-                    Clear History
+                    <span className={`w-2 h-2 rounded-full ${autoplayEnabled ? 'bg-[#D5F36A] animate-pulse' : 'bg-[#666674]'}`}></span>
+                    Autoplay: {autoplayEnabled ? 'ON' : 'OFF'}
                   </button>
-                )}
+                  {(queue.length > 0 || recentlyPlayed.length > 0) && (
+                    <button
+                      onClick={() => {
+                        clearQueue();
+                        setRecentlyPlayed([]);
+                        localStorage.removeItem('listenup_recently_played');
+                      }}
+                      className="px-4 py-2 text-xs font-semibold text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 rounded-xl transition-all cursor-pointer"
+                    >
+                      Clear History
+                    </button>
+                  )}
+                </div>
               </div>
 
               {/* Now Playing Card */}
@@ -3545,7 +3944,11 @@ export default function App() {
                                   </span>
 
                                   <button
-                                    onClick={() => removeFromQueue(song.id)}
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      removeFromQueue(song.id, index);
+                                    }}
                                     className="p-1.5 rounded-lg text-[#9999A6] hover:text-rose-400 hover:bg-rose-500/10 transition-all cursor-pointer"
                                     title="Remove from Queue"
                                     aria-label="Remove from Queue"
@@ -3750,6 +4153,39 @@ export default function App() {
               </svg>
             </button>
 
+            {/* Autoplay Toggle Button */}
+            <button
+              onClick={() => setAutoplayEnabled(!autoplayEnabled)}
+              className={`p-2 rounded-full transition-colors cursor-pointer hidden sm:flex items-center justify-center ${
+                autoplayEnabled ? 'text-[#D5F36A] hover:bg-[#D5F36A]/10' : 'text-[#666674] hover:text-[#9999A6]'
+              }`}
+              title={autoplayEnabled ? "Autoplay ON (Similar tracks play when queue ends)" : "Autoplay OFF"}
+              aria-label={autoplayEnabled ? "Disable Autoplay" : "Enable Autoplay"}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4">
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/>
+              </svg>
+            </button>
+
+            {/* Queue Toggle Button */}
+            <button
+              onClick={() => setIsQueuePanelOpen((prev) => !prev)}
+              className={`p-2 rounded-full transition-colors cursor-pointer hidden sm:flex items-center justify-center relative ${
+                isQueuePanelOpen ? 'text-[#D5F36A] bg-[#D5F36A]/10' : 'text-[#9999A6] hover:text-[#F5F5F7]'
+              }`}
+              title="Queue"
+              aria-label="Toggle Queue Panel"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4">
+                <path fillRule="evenodd" d="M3 6.75A.75.75 0 013.75 6h16.5a.75.75 0 010 1.5H3.75A.75.75 0 013 6.75zM3 12a.75.75 0 01.75-.75h16.5a.75.75 0 010 1.5H3.75A.75.75 0 013 12zm0 5.25a.75.75 0 01.75-.75h10.5a.75.75 0 010 1.5H3.75a.75.75 0 01-.75-.75z" clipRule="evenodd" />
+              </svg>
+              {queue.length > 0 && (
+                <span className="absolute -top-1 -right-1 min-w-[15px] h-3.5 px-1 rounded-full bg-[#D5F36A] text-black text-[9px] font-bold flex items-center justify-center">
+                  {queue.length}
+                </span>
+              )}
+            </button>
+
             {/* Desktop Volume Slider */}
             <div className="hidden lg:flex items-center gap-2 pl-2 border-l border-white/[0.08]">
               <button
@@ -3860,12 +4296,7 @@ export default function App() {
               key={item.id}
               onClick={() => {
                 if (item.id === 'profile') {
-                  if (user) {
-                    setIsProfileModalOpen(true);
-                  } else {
-                    setAuthModalMode('signin');
-                    setIsAuthModalOpen(true);
-                  }
+                  handleOpenProfileModal();
                   return;
                 }
                 setActiveTab(item.id);
@@ -3924,98 +4355,7 @@ export default function App() {
         </form>
       </dialog>
 
-      {/* Global Context Menu Sheet */}
-      {contextMenu.isOpen && contextMenu.song && (
-        <div className="fixed inset-0 z-[100] flex items-end md:items-center justify-center pointer-events-auto">
-          <div 
-            className="absolute inset-0 bg-black/75 backdrop-blur-md transition-opacity" 
-            onClick={() => setContextMenu({ isOpen: false, song: null })}
-          ></div>
-          
-          <div className="relative w-full md:max-w-sm bg-[#191922] rounded-t-3xl md:rounded-3xl shadow-2xl overflow-hidden border border-white/[0.08] pb-[env(safe-area-inset-bottom)]">
-            <div className="p-4 border-b border-white/[0.06] flex items-center gap-3.5 bg-white/[0.02]">
-              <img src={contextMenu.song.thumbnailUrl} alt={contextMenu.song.title} className="w-12 h-12 rounded-xl object-cover shadow border border-white/[0.08]" />
-              <div className="flex-1 min-w-0">
-                <h3 className="font-heading text-[#F5F5F7] font-bold truncate text-sm">{contextMenu.song.title}</h3>
-                <p className="text-[#9999A6] text-xs truncate">{contextMenu.song.artist}</p>
-              </div>
-            </div>
 
-            <div className="py-2 flex flex-col">
-              <button 
-                onClick={() => {
-                  navigator.clipboard.writeText(`https://listen-up-lilac.vercel.app/search?q=${encodeURIComponent(contextMenu.song.title)}`);
-                  setContextMenu({ isOpen: false, song: null });
-                }}
-                className="w-full text-left px-5 py-3.5 text-[#F5F5F7] hover:bg-white/[0.06] transition-colors flex items-center gap-3.5 text-sm cursor-pointer"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-5 h-5 text-[#9999A6]">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M7.217 10.907a2.25 2.25 0 100 2.186m0-2.186c.18.324.283.696.283 1.093s-.103.77-.283 1.093m0-2.186l9.566-5.314m-9.566 7.5l9.566 5.314m0 0a2.25 2.25 0 103.935 2.186 2.25 2.25 0 00-3.935-2.186zm0-12.814a2.25 2.25 0 103.933-2.185 2.25 2.25 0 00-3.933 2.185z" />
-                </svg>
-                <span>Share Track Link</span>
-              </button>
-              
-              <button 
-                onClick={() => {
-                  toggleFavorite(contextMenu.song);
-                  setContextMenu({ isOpen: false, song: null });
-                }}
-                className="w-full text-left px-5 py-3.5 text-[#F5F5F7] hover:bg-white/[0.06] transition-colors flex items-center gap-3.5 text-sm cursor-pointer"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-5 h-5 text-[#9999A6]">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12z" />
-                </svg>
-                <span>Toggle Favorite</span>
-              </button>
-
-              <button 
-                onClick={() => {
-                  appendToQueue(contextMenu.song);
-                  setContextMenu({ isOpen: false, song: null });
-                }}
-                className="w-full text-left px-5 py-3.5 text-[#F5F5F7] hover:bg-white/[0.06] transition-colors flex items-center gap-3.5 text-sm cursor-pointer"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-5 h-5 text-[#9999A6]">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 010 3.75H5.625a1.875 1.875 0 010-3.75z" />
-                </svg>
-                <span>Add to Queue</span>
-              </button>
-              
-              <div className="mt-2 pt-2 border-t border-white/[0.06]">
-                <div className="px-5 py-2 text-[10px] font-bold text-[#9999A6] uppercase tracking-widest font-mono">Add to Playlist</div>
-                {playlists.length === 0 ? (
-                  <div className="px-5 py-2 text-xs text-[#666674] italic">No playlists created yet.</div>
-                ) : (
-                  <div className="max-h-40 overflow-y-auto custom-scrollbar">
-                    {playlists.map((pl) => (
-                      <button 
-                        key={pl.id}
-                        onClick={() => {
-                          addSongToPlaylist(pl.id, contextMenu.song);
-                          setContextMenu({ isOpen: false, song: null });
-                        }}
-                        className="w-full text-left px-5 py-2.5 text-[#9999A6] hover:text-[#D5F36A] hover:bg-white/[0.06] transition-colors flex items-center gap-3 text-xs cursor-pointer"
-                      >
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-4 h-4 text-[#9999A6]">
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M9 19.5h12m-12-3h12m-12-3h12m-12-3h12M5.625 19.5a1.875 1.875 0 11-3.75 0 1.875 1.875 0 013.75 0zm0-7.5a1.875 1.875 0 11-3.75 0 1.875 1.875 0 013.75 0zm0-7.5a1.875 1.875 0 11-3.75 0 1.875 1.875 0 013.75 0z" />
-                        </svg>
-                        <span className="truncate">{pl.name}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-              
-              <button 
-                onClick={() => setContextMenu({ isOpen: false, song: null })}
-                className="w-full mt-2 py-3 text-center text-xs font-semibold text-[#9999A6] hover:text-[#F5F5F7] border-t border-white/[0.06] cursor-pointer"
-              >
-                Dismiss
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Song Request Notifications (Host Only) */}
       {pendingSongRequests.length > 0 && isHost && (
@@ -4098,31 +4438,90 @@ export default function App() {
           }
         }}
         onToggleMute={() => setIsMuted(!isMuted)}
+        onAddToPlaylist={(s) => handleOpenAddToPlaylist(s)}
+        onOpenMoreOptions={(s, rect) => setActiveContextMenu({ song: s, anchorRect: rect })}
+        onRemoveFromQueue={removeFromQueue}
+        onRemoveSong={removeFromQueue}
+        onMoveSong={moveSongInQueue}
+        onClearUpcoming={clearUpcomingQueue}
       />
 
-      {/* Supabase Authentication Modal */}
+      {/* Dedicated Queue Panel */}
+      <QueuePanel
+        isOpen={isQueuePanelOpen}
+        onClose={() => setIsQueuePanelOpen(false)}
+        currentSong={currentSong}
+        queue={queue}
+        isPlaying={isPlaying}
+        onPlaySong={(song) => playSong(song)}
+        onRemoveFromQueue={removeFromQueue}
+        onRemoveSong={removeFromQueue}
+        onMoveSong={moveSongInQueue}
+        onClearUpcoming={clearUpcomingQueue}
+        onExploreClick={() => {
+          setIsQueuePanelOpen(false);
+          setActiveTab('home');
+        }}
+        onOpenContextMenu={(song, rect) => setActiveContextMenu({ song, anchorRect: rect })}
+      />
+
+      {/* Reusable Add to Playlist Modal */}
+      <AddToPlaylistModal
+        isOpen={Boolean(playlistModalSong)}
+        onClose={() => setPlaylistModalSong(null)}
+        song={playlistModalSong}
+        playlists={playlists}
+        user={user}
+        onCreatePlaylist={async (name) => {
+          const res = await createPlaylist(name);
+          return res;
+        }}
+        onAddToPlaylist={async (playlistId, song) => {
+          const res = await addSongToPlaylist(playlistId, song);
+          return res;
+        }}
+      />
+
+      {/* Anchored / Floating Context Menu (immune to scroll/overflow clipping) */}
+      <SongContextMenu
+        isOpen={Boolean(activeContextMenu?.song)}
+        onClose={() => setActiveContextMenu(null)}
+        song={activeContextMenu?.song}
+        anchorRect={activeContextMenu?.anchorRect}
+        isFavorite={favorites.some((s) => s.id === activeContextMenu?.song?.id)}
+        onToggleFavorite={toggleFavorite}
+        onPlayNow={(song) => playSong(song)}
+        onPlayNext={(song) => playNextInQueue(song)}
+        onAddToQueue={(song) => appendToQueue(song)}
+        onAddToPlaylist={(song) => handleOpenAddToPlaylist(song)}
+      />
+
+      {/* Supabase Authentication Modal with Centralized Action Guard */}
       <AuthModal
-        isOpen={isAuthModalOpen}
-        initialMode={authModalMode}
-        onClose={() => setIsAuthModalOpen(false)}
+        isOpen={isAuthModalOpen || authModalState.isOpen}
+        initialMode={authModalState.mode || authModalMode}
+        message={authModalState.message}
+        onClose={() => {
+          setIsAuthModalOpen(false);
+          closeAuthModal();
+        }}
+        onAuthSuccess={(authedUser) => {
+          if (authModalState.pendingAction && authedUser) {
+            try {
+              authModalState.pendingAction(authedUser);
+            } catch (e) {
+              console.warn('Pending auth action error:', e);
+            }
+          }
+          setIsAuthModalOpen(false);
+          closeAuthModal();
+        }}
       />
 
       {/* User Profile & Music Preferences Settings Modal */}
       <ProfileSettingsModal
         isOpen={isProfileModalOpen}
         onClose={() => setIsProfileModalOpen(false)}
-      />
-
-      {/* Guest Favorites and Playlists Migration Modal */}
-      <GuestMigrationModal
-        isOpen={isGuestMigrationOpen}
-        guestFavoritesCount={(favorites || []).length}
-        guestPlaylistsCount={(playlists || []).length}
-        onConfirmMerge={async () => {
-          await migrateGuestData(favorites, playlists);
-          setIsGuestMigrationOpen(false);
-        }}
-        onSkip={() => setIsGuestMigrationOpen(false)}
       />
     </div>
   );

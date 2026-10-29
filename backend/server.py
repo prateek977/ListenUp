@@ -8,7 +8,16 @@ import os
 import random
 import string
 from datetime import datetime
+import time
+import requests
 from auth import require_auth, verify_supabase_token
+from recommender import (
+    get_next_recommendations,
+    get_similar_songs,
+    get_home_sections,
+    insert_listening_event,
+    upsert_user_song_stats,
+)
 
 # Set up static folder pointing to the React production build if it exists
 base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -16,9 +25,13 @@ dist_folder = os.path.join(base_dir, '..', 'listenup-web', 'dist')
 if not os.path.exists(dist_folder):
     dist_folder = os.path.join(base_dir, 'static')
 
+import sys
+
 app = Flask(__name__, static_folder=dist_folder, static_url_path='')
 CORS(app)  # Enable CORS for clients
-socketio = SocketIO(app, cors_allowed_origins='*')
+# Use threading async_mode when running on Python 3.13+ where eventlet threading monkey-patching is incompatible
+_async_mode = 'threading' if sys.version_info >= (3, 13) else None
+socketio = SocketIO(app, cors_allowed_origins='*', async_mode=_async_mode)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -182,6 +195,218 @@ def categories():
     """Return the list of available browse categories"""
     return jsonify(list(BROWSE_CATEGORIES.keys()))
 
+# ── Deezer Artist Discovery Configuration & In-Memory Cache ──────────────────
+_ARTIST_SEARCH_CACHE: dict[str, tuple[float, dict]] = {}
+_ARTIST_CACHE_TTL = 900.0  # 15 minutes TTL
+_ARTIST_CACHE_MAX = 300
+
+# High-fidelity fallback artist seeds for initial zero-query discovery
+DEFAULT_DISCOVERY_ARTIST_NAMES = [
+    "Arijit Singh",
+    "Taylor Swift",
+    "The Weeknd",
+    "Diljit Dosanjh",
+    "Coldplay",
+    "Shreya Ghoshal",
+    "Drake",
+    "Ed Sheeran",
+    "Billie Eilish",
+    "Pritam",
+    "A. R. Rahman",
+    "Dua Lipa",
+    "Bad Bunny",
+    "Kendrick Lamar",
+    "Bruno Mars",
+    "Sidhu Moose Wala",
+    "Karan Aujla",
+    "Atif Aslam",
+    "Eminem",
+    "AP Dhillon"
+]
+
+def _clean_artist_image(url: str | None) -> str | None:
+    """Sanitize Deezer image URLs and filter out Deezer's blank placeholder hashes."""
+    if not url or not isinstance(url, str):
+        return None
+    url = url.strip()
+    if not url.startswith("http"):
+        return None
+    # Deezer returns an empty hash with double-slash like '/images/artist//250x250...' when no image exists
+    if "/images/artist//" in url:
+        return None
+    return url
+
+def _normalize_deezer_artist(raw: dict) -> dict:
+    """Normalize Deezer API artist payload into ListenUp's canonical contract."""
+    artist_id = str(raw.get("id") or "")
+    name = (raw.get("name") or "Unknown Artist").strip()
+    picture_small = _clean_artist_image(raw.get("picture_small") or raw.get("picture"))
+    picture_medium = _clean_artist_image(raw.get("picture_medium"))
+    picture_big = _clean_artist_image(raw.get("picture_big") or raw.get("picture_xl"))
+    link = raw.get("link") or (f"https://www.deezer.com/artist/{artist_id}" if artist_id else "")
+    fan_count = int(raw.get("nb_fan") or 0)
+    album_count = int(raw.get("nb_album") or 0)
+
+    # Preferred image fallback chain
+    default_image = picture_medium or picture_big or picture_small or ""
+
+    return {
+        "id": artist_id,
+        "name": name,
+        "image": default_image,
+        "imageMedium": picture_medium or default_image,
+        "imageLarge": picture_big or default_image,
+        "deezerUrl": link,
+        "provider": "deezer",
+        "fanCount": fan_count,
+        "albumCount": album_count,
+    }
+
+@app.route('/api/artists/search', methods=['GET'])
+def search_artists():
+    """
+    Search music artists via Deezer public API proxy.
+    Query parameters:
+        q: Artist name or query (e.g. 'arijit'). If empty or missing, returns curated popular discovery artists.
+        limit: Max results to return (default 20, min 1, max 50).
+        index: Pagination offset index (default 0, min 0).
+    """
+    query = (request.args.get('q') or '').strip()
+    try:
+        limit = max(1, min(int(request.args.get('limit', 20)), 50))
+    except (ValueError, TypeError):
+        limit = 20
+
+    try:
+        index = max(0, int(request.args.get('index', 0)))
+    except (ValueError, TypeError):
+        index = 0
+
+    cache_key = f"{query.lower()}:{limit}:{index}"
+    now = time.time()
+
+    # Check in-memory TTL cache
+    if cache_key in _ARTIST_SEARCH_CACHE:
+        cached_time, cached_data = _ARTIST_SEARCH_CACHE[cache_key]
+        if now - cached_time < _ARTIST_CACHE_TTL:
+            return jsonify(cached_data)
+
+    try:
+        if query:
+            deezer_url = "https://api.deezer.com/search/artist"
+            resp = requests.get(
+                deezer_url,
+                params={"q": query, "limit": limit, "index": index},
+                headers={"User-Agent": "ListenUp/1.0"},
+                timeout=5.0
+            )
+
+            if resp.status_code != 200:
+                logger.warning("Deezer artist search returned HTTP %s for query '%s'", resp.status_code, query)
+                return jsonify({
+                    "artists": [],
+                    "total": 0,
+                    "hasMore": False,
+                    "nextIndex": None,
+                    "provider": "deezer",
+                    "error": f"Deezer API returned HTTP {resp.status_code}"
+                }), 502
+
+            payload = resp.json()
+            if "error" in payload:
+                err_msg = payload["error"].get("message", "Unknown Deezer error")
+                logger.warning("Deezer API error response: %s", err_msg)
+                return jsonify({
+                    "artists": [],
+                    "total": 0,
+                    "hasMore": False,
+                    "nextIndex": None,
+                    "provider": "deezer",
+                    "error": err_msg
+                }), 200
+
+            raw_data = payload.get("data", []) or []
+            total = int(payload.get("total", len(raw_data)))
+            artists = [_normalize_deezer_artist(item) for item in raw_data if item and item.get("id")]
+            has_more = (index + len(artists)) < total and bool(payload.get("next"))
+            next_index = index + len(artists) if has_more else None
+
+            response_data = {
+                "artists": artists,
+                "total": total,
+                "hasMore": has_more,
+                "nextIndex": next_index,
+                "provider": "deezer",
+                "query": query
+            }
+        else:
+            # When query is empty, provide paginated discovery slice from default popular artists
+            slice_names = DEFAULT_DISCOVERY_ARTIST_NAMES[index : index + limit]
+            artists = []
+            for name in slice_names:
+                single_key = f"single:{name.lower()}"
+                if single_key in _ARTIST_SEARCH_CACHE and (now - _ARTIST_SEARCH_CACHE[single_key][0] < _ARTIST_CACHE_TTL):
+                    artists.append(_ARTIST_SEARCH_CACHE[single_key][1])
+                    continue
+
+                try:
+                    r = requests.get(
+                        "https://api.deezer.com/search/artist",
+                        params={"q": name, "limit": 1},
+                        headers={"User-Agent": "ListenUp/1.0"},
+                        timeout=3.0
+                    )
+                    if r.status_code == 200:
+                        d = r.json().get("data", [])
+                        if d and d[0].get("id"):
+                            norm = _normalize_deezer_artist(d[0])
+                            artists.append(norm)
+                            _ARTIST_SEARCH_CACHE[single_key] = (now, norm)
+                except Exception as ex:
+                    logger.debug("Failed fetching default discovery artist '%s': %s", name, ex)
+
+            total = len(DEFAULT_DISCOVERY_ARTIST_NAMES)
+            has_more = (index + len(slice_names)) < total
+            next_index = index + len(slice_names) if has_more else None
+
+            response_data = {
+                "artists": artists,
+                "total": total,
+                "hasMore": has_more,
+                "nextIndex": next_index,
+                "provider": "deezer",
+                "query": ""
+            }
+
+        # Cache response with max size control
+        if len(_ARTIST_SEARCH_CACHE) > _ARTIST_CACHE_MAX:
+            oldest_key = min(_ARTIST_SEARCH_CACHE.keys(), key=lambda k: _ARTIST_SEARCH_CACHE[k][0])
+            _ARTIST_SEARCH_CACHE.pop(oldest_key, None)
+        _ARTIST_SEARCH_CACHE[cache_key] = (now, response_data)
+
+        return jsonify(response_data)
+
+    except requests.exceptions.Timeout:
+        logger.error("Deezer artist search timed out for query '%s'", query)
+        return jsonify({
+            "artists": [],
+            "total": 0,
+            "hasMore": False,
+            "nextIndex": None,
+            "provider": "deezer",
+            "error": "Deezer search request timed out"
+        }), 504
+    except Exception as exc:
+        logger.error("Deezer artist search unexpected error: %s", exc)
+        return jsonify({
+            "artists": [],
+            "total": 0,
+            "hasMore": False,
+            "nextIndex": None,
+            "provider": "deezer",
+            "error": "Failed to search artists"
+        }), 500
+
 @app.route('/stream/<video_id>', methods=['GET'])
 @app.route('/api/stream/<video_id>', methods=['GET'])
 def get_stream(video_id):
@@ -265,8 +490,11 @@ def get_personalized_recommendations():
     """
     try:
         body = request.get_json() or {}
-        artists = body.get('artists', [])
-        genres = body.get('genres', [])
+        raw_artists = body.get('artists', [])
+        artists = [a if isinstance(a, str) else a.get('name', '') for a in raw_artists]
+        artists = [a.strip() for a in artists if a and a.strip()]
+        genres = [g if isinstance(g, str) else g.get('name', '') for g in body.get('genres', [])]
+        genres = [g.strip() for g in genres if g and g.strip()]
         languages = body.get('languages', [])
         moods = body.get('moods', [])
 
@@ -285,8 +513,7 @@ def get_personalized_recommendations():
 
         artist_sections = []
         # Fetch top tracks for up to 3 favorite artists
-        for artist in artists[:3]:
-            artist_name = artist if isinstance(artist, str) else artist.get('name', '')
+        for artist_name in artists[:3]:
             if not artist_name:
                 continue
             query = f"{artist_name} best songs official hit video"
@@ -652,6 +879,353 @@ def list_rooms():
                 'host': next((p['displayName'] for p in room['participants'] if p['isHost']), 'Unknown')
             })
     return jsonify(public_rooms)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  RECOMMENDATION ENGINE ROUTES
+#  All routes added by the recommendation feature — clearly grouped here.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _get_auth_token_and_user_id():
+    """
+    Extract the Supabase JWT from the Authorization header.
+    Returns (token, user_id) or (None, None) if missing/invalid.
+    Graceful: does not raise — missing auth just means guest mode.
+    """
+    auth_header = request.headers.get('Authorization', '')
+    if not auth_header.startswith('Bearer '):
+        return None, None
+    token = auth_header.split('Bearer ', 1)[1].strip()
+    if not token:
+        return None, None
+    try:
+        claims, error = verify_supabase_token(token)
+        if error or not claims:
+            return token, None
+        user_id = claims.get('sub') or claims.get('id')
+        return token, user_id
+    except Exception:
+        return token, None
+
+
+def _parse_preferences_from_body(body: dict) -> tuple[list, list, list]:
+    """Parse genres, moods, artists from a request body dict."""
+    raw_artists = body.get('artists', []) or []
+    artists = [a if isinstance(a, str) else a.get('name', '') for a in raw_artists]
+    artists = [a.strip() for a in artists if a and a.strip()]
+
+    genres = [g.strip() for g in (body.get('genres', []) or []) if g and g.strip()]
+    moods  = [m.strip() for m in (body.get('moods', [])  or []) if m and m.strip()]
+    return genres, moods, artists
+
+
+@app.route('/api/listening-events', methods=['POST'])
+def record_listening_event():
+    """
+    Record a single listening event for the recommendation engine.
+
+    Request body (JSON):
+        song_id        TEXT    required — YouTube video ID
+        song_data      OBJECT  required — full song object {id, title, artist, ...}
+        event_type     TEXT    required — one of:
+                               'play_started' | 'play_completed' | 'song_skipped' |
+                               'song_liked' | 'song_unliked' | 'playlist_added' |
+                               'play_progress'
+        listen_seconds FLOAT   optional — seconds listened before this event
+        listen_fraction FLOAT  optional — fraction of song listened (0.0–1.0)
+        metadata       OBJECT  optional — free-form extra data
+
+    Auth: optional Bearer token — authenticated events are attributed to the user.
+    Anonymous events are accepted but stored without a user_id (not used in scoring).
+
+    Returns: {"ok": true} or {"error": "..."}
+    """
+    VALID_EVENT_TYPES = {
+        'play_started', 'play_completed', 'song_skipped',
+        'song_liked', 'song_unliked', 'playlist_added', 'play_progress',
+    }
+    try:
+        body = request.get_json(silent=True) or {}
+
+        song_id = (body.get('song_id') or '').strip()
+        if not song_id:
+            return jsonify({"error": "song_id is required"}), 400
+
+        event_type = (body.get('event_type') or '').strip()
+        if event_type not in VALID_EVENT_TYPES:
+            return jsonify({
+                "error": f"Invalid event_type. Must be one of: {sorted(VALID_EVENT_TYPES)}"
+            }), 400
+
+        song_data       = body.get('song_data') or {}
+        listen_seconds  = body.get('listen_seconds')
+        listen_fraction = body.get('listen_fraction')
+        metadata        = body.get('metadata') or {}
+
+        # Validate numerics
+        if listen_seconds is not None:
+            try:
+                listen_seconds = float(listen_seconds)
+            except (TypeError, ValueError):
+                listen_seconds = None
+        if listen_fraction is not None:
+            try:
+                listen_fraction = max(0.0, min(1.0, float(listen_fraction)))
+            except (TypeError, ValueError):
+                listen_fraction = None
+
+        auth_token, user_id = _get_auth_token_and_user_id()
+
+        # Fire-and-forget: insert raw event and update aggregated stats
+        # Both operations are non-blocking best-effort — failures are logged, not re-raised
+        insert_listening_event(
+            user_id=user_id,
+            song_id=song_id,
+            song_data=song_data,
+            event_type=event_type,
+            listen_seconds=listen_seconds,
+            listen_fraction=listen_fraction,
+            metadata=metadata,
+            auth_token=auth_token,
+        )
+        if user_id:
+            upsert_user_song_stats(
+                user_id=user_id,
+                song_id=song_id,
+                song_data=song_data,
+                event_type=event_type,
+                listen_seconds=listen_seconds,
+                listen_fraction=listen_fraction,
+                auth_token=auth_token,
+            )
+
+        return jsonify({"ok": True})
+
+    except Exception as exc:
+        logger.error("record_listening_event error: %s", exc)
+        return jsonify({"error": "Internal server error"}), 500
+
+
+@app.route('/api/recommendations/next', methods=['GET'])
+def recommendations_next():
+    """
+    Get the next recommended songs for autoplay.
+
+    Query parameters:
+        current_song_id  TEXT    optional — ID of the song currently playing
+        exclude_ids      TEXT    optional — comma-separated song IDs to exclude
+        genres           TEXT    optional — comma-separated genre slugs
+        moods            TEXT    optional — comma-separated mood strings
+        artists          TEXT    optional — comma-separated artist names
+        limit            INT     optional — max songs to return (default 5, max 10)
+
+    Auth: optional Bearer token — authenticated requests use personal listening history.
+
+    Returns:
+        {"songs": [...], "has_personalisation": true/false}
+    """
+    try:
+        auth_token, user_id = _get_auth_token_and_user_id()
+
+        current_song_id = request.args.get('current_song_id', '').strip()
+        exclude_raw     = request.args.get('exclude_ids', '')
+        exclude_ids     = [e.strip() for e in exclude_raw.split(',') if e.strip()]
+        if current_song_id:
+            exclude_ids.append(current_song_id)
+
+        genres  = [g.strip() for g in request.args.get('genres', '').split(',') if g.strip()]
+        moods   = [m.strip() for m in request.args.get('moods', '').split(',') if m.strip()]
+        artists = [a.strip() for a in request.args.get('artists', '').split(',') if a.strip()]
+
+        try:
+            limit = min(int(request.args.get('limit', 5)), 10)
+        except (ValueError, TypeError):
+            limit = 5
+
+        # Build a minimal current_song dict if we have its ID
+        current_song = None
+        if current_song_id:
+            current_song = {"id": current_song_id}
+
+        songs = get_next_recommendations(
+            user_id=user_id,
+            user_genres=genres,
+            user_moods=moods,
+            user_artists=artists,
+            current_song=current_song,
+            exclude_ids=exclude_ids,
+            limit=limit,
+            auth_token=auth_token,
+        )
+
+        return jsonify({
+            "songs": songs,
+            "has_personalisation": bool(user_id and (genres or artists)),
+        })
+
+    except Exception as exc:
+        logger.error("recommendations_next error: %s", exc)
+        # Never crash the player — return empty list with a grace flag
+        return jsonify({"songs": [], "has_personalisation": False, "error": "Recommendation service unavailable"}), 200
+
+
+@app.route('/api/recommendations/home', methods=['GET', 'POST'])
+def recommendations_home():
+    """
+    Get personalised home screen sections.
+
+    Accepts body (POST) or query params (GET):
+        genres   list/comma-string — user's preferred genres
+        moods    list/comma-string — user's preferred moods
+        artists  list/comma-string — user's favourite artists
+
+    Auth: optional Bearer token.
+
+    Returns:
+        {
+          "made_for_you": [...],
+          "because_you": [{"artist": "...", "songs": [...]}, ...],
+          "discover_more": [...],
+          "has_personalisation": bool
+        }
+    """
+    try:
+        auth_token, user_id = _get_auth_token_and_user_id()
+
+        if request.method == 'POST':
+            body = request.get_json(silent=True) or {}
+            genres, moods, artists = _parse_preferences_from_body(body)
+        else:
+            genres  = [g.strip() for g in request.args.get('genres', '').split(',') if g.strip()]
+            moods   = [m.strip() for m in request.args.get('moods', '').split(',') if m.strip()]
+            artists = [a.strip() for a in request.args.get('artists', '').split(',') if a.strip()]
+
+        sections = get_home_sections(
+            user_id=user_id,
+            user_genres=genres,
+            user_moods=moods,
+            user_artists=artists,
+            limit_per_section=10,
+            auth_token=auth_token,
+        )
+        return jsonify(sections)
+
+    except Exception as exc:
+        logger.error("recommendations_home error: %s", exc)
+        return jsonify({
+            "made_for_you": [], "because_you": [], "discover_more": [],
+            "has_personalisation": False
+        }), 200
+
+
+@app.route('/api/recommendations/similar/<song_id>', methods=['GET'])
+def recommendations_similar(song_id: str):
+    """
+    Get songs similar to the given song.
+
+    Path parameter:
+        song_id — YouTube video ID of the reference song
+
+    Query parameters:
+        title    TEXT optional — title of the reference song
+        artist   TEXT optional — artist of the reference song
+        exclude_ids TEXT optional — comma-separated IDs to exclude
+        limit    INT  optional — max results (default 8, max 15)
+
+    Returns: {"songs": [...]}
+    """
+    try:
+        auth_token, user_id = _get_auth_token_and_user_id()
+
+        song_id = (song_id or '').strip()
+        if not song_id:
+            return jsonify({"error": "song_id is required"}), 400
+
+        title   = request.args.get('title', '').strip()
+        artist  = request.args.get('artist', '').strip()
+        exclude_raw = request.args.get('exclude_ids', '')
+        exclude_ids = [e.strip() for e in exclude_raw.split(',') if e.strip()]
+
+        try:
+            limit = min(int(request.args.get('limit', 8)), 15)
+        except (ValueError, TypeError):
+            limit = 8
+
+        current_song = {"id": song_id, "title": title, "artist": artist}
+
+        songs = get_similar_songs(
+            current_song=current_song,
+            user_id=user_id,
+            exclude_ids=exclude_ids,
+            limit=limit,
+            auth_token=auth_token,
+        )
+        return jsonify({"songs": songs})
+
+    except Exception as exc:
+        logger.error("recommendations_similar error for song_id=%s: %s", song_id, exc)
+        return jsonify({"songs": []}), 200
+
+
+@app.route('/api/recommendations/feedback', methods=['POST'])
+def recommendations_feedback():
+    """
+    Record explicit user feedback on a recommendation (thumbs up / thumbs down).
+    This is stored as a listening event and updates user_song_stats accordingly.
+
+    Request body (JSON):
+        song_id    TEXT    required
+        song_data  OBJECT  optional
+        action     TEXT    required — 'liked' | 'disliked' | 'dismissed'
+
+    Auth: recommended — anonymous feedback is accepted but not attributed.
+
+    Returns: {"ok": true}
+    """
+    try:
+        body = request.get_json(silent=True) or {}
+        song_id   = (body.get('song_id') or '').strip()
+        song_data = body.get('song_data') or {}
+        action    = (body.get('action') or '').strip().lower()
+
+        if not song_id:
+            return jsonify({"error": "song_id is required"}), 400
+        if action not in ('liked', 'disliked', 'dismissed'):
+            return jsonify({"error": "action must be 'liked', 'disliked', or 'dismissed'"}), 400
+
+        auth_token, user_id = _get_auth_token_and_user_id()
+
+        event_type = {
+            'liked':     'song_liked',
+            'disliked':  'song_unliked',
+            'dismissed': 'song_skipped',
+        }[action]
+
+        insert_listening_event(
+            user_id=user_id,
+            song_id=song_id,
+            song_data=song_data,
+            event_type=event_type,
+            metadata={"source": "recommendation_feedback", "action": action},
+            auth_token=auth_token,
+        )
+        if user_id:
+            upsert_user_song_stats(
+                user_id=user_id,
+                song_id=song_id,
+                song_data=song_data,
+                event_type=event_type,
+                listen_seconds=None,
+                listen_fraction=None,
+                auth_token=auth_token,
+            )
+
+        return jsonify({"ok": True})
+
+    except Exception as exc:
+        logger.error("recommendations_feedback error: %s", exc)
+        return jsonify({"error": "Internal server error"}), 500
+
 
 if __name__ == "__main__":
     print("=" * 50)

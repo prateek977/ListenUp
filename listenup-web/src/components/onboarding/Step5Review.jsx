@@ -92,7 +92,7 @@ export default function Step5Review({
           <div className="flex flex-wrap gap-2">
             {selectedArtists.map(artist => {
               const name = typeof artist === 'string' ? artist : artist.name;
-              const img = typeof artist === 'object' ? artist.imageUrl : null;
+              const img = typeof artist === 'object' ? (artist.imageMedium || artist.image || artist.imageUrl) : null;
               return (
                 <span key={name} className="pl-1 pr-3 py-1 rounded-full bg-white/[0.05] border border-white/[0.08] text-xs text-slate-200 flex items-center gap-2">
                   {img ? (

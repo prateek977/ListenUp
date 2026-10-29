@@ -7,26 +7,114 @@ export function AuthProvider({ children }) {
   const [session, setSession] = useState(null);
   const [user, setUser] = useState(null);
   const [profile, setProfile] = useState(null);
-  const [preferences, setPreferences] = useState({
-    genres: [],
-    artists: [],
-    languages: [],
-    moods: [],
-    activities: [],
-    explicit_content_preference: true
+  const [preferences, setPreferences] = useState(() => {
+    try {
+      const current = localStorage.getItem('listenup_user_prefs_current');
+      if (current) {
+        const parsed = JSON.parse(current);
+        if (parsed && (parsed.genres?.length > 0 || parsed.artists?.length > 0 || parsed.languages?.length > 0)) {
+          return parsed;
+        }
+      }
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith('listenup_user_prefs_')) {
+          const val = localStorage.getItem(key);
+          if (val) {
+            const parsed = JSON.parse(val);
+            if (parsed && (parsed.genres?.length > 0 || parsed.artists?.length > 0 || parsed.languages?.length > 0)) {
+              return parsed;
+            }
+          }
+        }
+      }
+    } catch {}
+    return {
+      genres: [],
+      artists: [],
+      languages: [],
+      moods: [],
+      activities: [],
+      explicit_content_preference: true
+    };
   });
   const [loading, setLoading] = useState(true);
   const [authError, setAuthError] = useState(null);
 
+  // Centralized Authentication Guard State
+  const [authModalState, setAuthModalState] = useState({
+    isOpen: false,
+    mode: 'signin',
+    message: null,
+    pendingAction: null
+  });
+
   const userRef = useRef(null);
   userRef.current = user;
   const fetchingUserIdRef = useRef(null);
+  const pendingActionRef = useRef(null);
+
+  const closeAuthModal = useCallback(() => {
+    pendingActionRef.current = null;
+    setAuthModalState(prev => ({
+      ...prev,
+      isOpen: false,
+      message: null,
+      pendingAction: null
+    }));
+  }, []);
+
+  const openAuthModal = useCallback(({ mode = 'signin', message = null, onAuthSuccess = null } = {}) => {
+    if (typeof onAuthSuccess === 'function') {
+      pendingActionRef.current = onAuthSuccess;
+    }
+    setAuthModalState({
+      isOpen: true,
+      mode,
+      message,
+      pendingAction: typeof onAuthSuccess === 'function' ? onAuthSuccess : null
+    });
+  }, []);
+
+  /**
+   * Centralized Authentication Guard
+   * Verifies that a valid authenticated user exists before permitting data-persisting mutations.
+   * If unauthenticated, displays the login dialog with a clear explanation, preserves the
+   * intended action to resume after authentication, and returns { success: false, requireAuth: true }.
+   */
+  const requireAuth = useCallback((actionCallback, options = {}) => {
+    const activeUser = userRef.current;
+    if (activeUser?.id) {
+      if (typeof actionCallback === 'function') {
+        return actionCallback(activeUser);
+      }
+      return { success: true, user: activeUser };
+    }
+
+    const promptMessage = options.message || 'Log in to save your playlists, favorites, and preferences.';
+    const mode = options.mode || 'signin';
+
+    if (typeof actionCallback === 'function') {
+      pendingActionRef.current = actionCallback;
+    }
+
+    setAuthModalState({
+      isOpen: true,
+      mode,
+      message: promptMessage,
+      pendingAction: typeof actionCallback === 'function' ? actionCallback : null
+    });
+
+    return { success: false, requireAuth: true };
+  }, []);
 
   // Fetch full user profile & preferences from Supabase (or fallback adapter)
   const fetchUserData = useCallback(async (userId, fallbackMeta) => {
     if (!userId) return;
     if (fetchingUserIdRef.current === userId) return; // Prevent duplicate concurrent fetch
     fetchingUserIdRef.current = userId;
+
+    const userMetadata = fallbackMeta || userRef.current?.user_metadata || {};
 
     try {
       // Check local cache first for instant reliable state
@@ -66,7 +154,7 @@ export function AuthProvider({ children }) {
         localStorage.setItem(`listenup_profile_${userId}`, JSON.stringify(resolvedProf));
       } else {
         // Fallback default profile if trigger hasn't finished yet or DB is offline
-        const meta = fallbackMeta || userRef.current?.user_metadata || {};
+        const meta = userMetadata;
         // CRITICAL FIX: Only set onboarding_completed = false if they EXPLICITLY just created an account!
         // On normal refresh or existing users, onboarding_completed MUST be true so onboarding doesn't pop up!
         const isCompleted = hasCompletedLocally || 
@@ -88,30 +176,84 @@ export function AuthProvider({ children }) {
         try {
           const [genresRes, artistsRes, langsRes, prefsRes] = await Promise.all([
             supabase.from('user_genres').select('genre_id, genres(name, slug)').eq('user_id', userId),
-            supabase.from('user_favorite_artists').select('artist_id, artists(name, image_url)').eq('user_id', userId),
+            supabase.from('user_favorite_artists').select('artist_id, artists(id, name, image_url, external_id)').eq('user_id', userId),
             supabase.from('user_languages').select('language_id, custom_language, languages(name, code)').eq('user_id', userId),
             supabase.from('user_listening_preferences').select('*').eq('user_id', userId).maybeSingle()
           ]);
 
           const loadedGenres = (genresRes.data || []).map(g => g.genres?.slug || g.genres?.name || g.genre_id);
-          const loadedArtists = (artistsRes.data || []).map(a => a.artists?.name || a.artist_id);
+          const loadedArtists = (artistsRes.data || []).map(a => {
+            if (a.artists) {
+              const rawExt = a.artists.external_id || '';
+              const cleanId = rawExt.startsWith('deezer:') ? rawExt.replace('deezer:', '') : (a.artists.id || a.artist_id);
+              return {
+                id: cleanId,
+                name: a.artists.name,
+                image: a.artists.image_url || '',
+                imageMedium: a.artists.image_url || '',
+                imageLarge: a.artists.image_url || '',
+                provider: 'deezer'
+              };
+            }
+            return a.artist_id;
+          });
           const loadedLangs = (langsRes.data || []).map(l => l.custom_language || l.languages?.name || l.language_id);
           const listeningPrefs = prefsRes.data || {};
 
-          setPreferences({
-            genres: loadedGenres,
-            artists: loadedArtists,
-            languages: loadedLangs,
-            moods: listeningPrefs.preferred_moods || [],
-            activities: listeningPrefs.listening_activities || [],
-            explicit_content_preference: listeningPrefs.explicit_content_preference ?? true
-          });
+          if (loadedGenres.length > 0 || loadedArtists.length > 0 || loadedLangs.length > 0) {
+            const resolvedPrefs = {
+              genres: loadedGenres,
+              artists: loadedArtists,
+              languages: loadedLangs,
+              moods: listeningPrefs.preferred_moods || [],
+              activities: listeningPrefs.listening_activities || [],
+              explicit_content_preference: listeningPrefs.explicit_content_preference ?? true
+            };
+            setPreferences(resolvedPrefs);
+            localStorage.setItem(`listenup_user_prefs_${userId}`, JSON.stringify(resolvedPrefs));
+            localStorage.setItem('listenup_user_prefs_current', JSON.stringify(resolvedPrefs));
+          } else {
+            // Relational tables not present or empty: restore from Supabase Auth user_metadata or localStorage
+            const savedLocal = (() => {
+              try {
+                const raw = localStorage.getItem(`listenup_user_prefs_${userId}`) ||
+                            localStorage.getItem('listenup_user_prefs_current');
+                return raw ? JSON.parse(raw) : null;
+              } catch { return null; }
+            })();
+            const fallback = userMetadata?.preferences || savedLocal;
+            if (fallback && (fallback.genres?.length > 0 || fallback.artists?.length > 0 || fallback.languages?.length > 0)) {
+              const restoredPrefs = {
+                genres: fallback.genres || [],
+                artists: fallback.artists || [],
+                languages: fallback.languages || [],
+                moods: fallback.moods || [],
+                activities: fallback.activities || [],
+                explicit_content_preference: fallback.explicit_content_preference ?? true
+              };
+              setPreferences(restoredPrefs);
+              localStorage.setItem(`listenup_user_prefs_${userId}`, JSON.stringify(restoredPrefs));
+              localStorage.setItem('listenup_user_prefs_current', JSON.stringify(restoredPrefs));
+            }
+          }
         } catch (dbErr) {
           console.warn('Failed to load nested relational preferences from Supabase:', dbErr);
+          const savedLocal = (() => {
+            try {
+              const raw = localStorage.getItem(`listenup_user_prefs_${userId}`) ||
+                          localStorage.getItem('listenup_user_prefs_current');
+              return raw ? JSON.parse(raw) : null;
+            } catch { return null; }
+          })();
+          const fallback = userMetadata?.preferences || savedLocal;
+          if (fallback && (fallback.genres?.length > 0 || fallback.artists?.length > 0 || fallback.languages?.length > 0)) {
+            setPreferences(fallback);
+          }
         }
       } else {
         // From LocalStorage Adapter
-        const savedPrefs = localStorage.getItem(`listenup_user_prefs_${userId}`);
+        const savedPrefs = localStorage.getItem(`listenup_user_prefs_${userId}`) ||
+                           localStorage.getItem('listenup_user_prefs_current');
         if (savedPrefs) {
           try {
             setPreferences(JSON.parse(savedPrefs));
@@ -158,7 +300,19 @@ export function AuthProvider({ children }) {
       setUser(currentUser);
       if (currentUser) {
         await fetchUserData(currentUser.id, currentUser.user_metadata);
-      } else {
+        // Execute and clear any pending action after successful authentication
+        if (pendingActionRef.current) {
+          const actionToRun = pendingActionRef.current;
+          pendingActionRef.current = null;
+          setAuthModalState(prev => ({ ...prev, isOpen: false, pendingAction: null, message: null }));
+          try {
+            actionToRun(currentUser);
+          } catch (actErr) {
+            console.warn('Pending auth action execution error:', actErr);
+          }
+        }
+      } else if (event === 'SIGNED_OUT') {
+        pendingActionRef.current = null;
         setProfile(null);
         setPreferences({
           genres: [],
@@ -168,6 +322,7 @@ export function AuthProvider({ children }) {
           activities: [],
           explicit_content_preference: true
         });
+        localStorage.removeItem('listenup_user_prefs_current');
       }
       setLoading(false);
     });
@@ -252,7 +407,10 @@ export function AuthProvider({ children }) {
 
   // Update Profile
   const updateProfile = async (updates) => {
-    if (!user) return { success: false, error: 'Not authenticated' };
+    if (!user) {
+      requireAuth(null, { message: 'Log in to update your profile settings.' });
+      return { success: false, requireAuth: true, error: 'Authentication required' };
+    }
     try {
       const updated = {
         ...profile,
@@ -260,18 +418,35 @@ export function AuthProvider({ children }) {
         updated_at: new Date().toISOString()
       };
 
+      // 1. Persist to Supabase Auth user_metadata (guaranteed DB storage)
+      if (isSupabaseConfigured) {
+        try {
+          await supabase.auth.updateUser({
+            data: {
+              full_name: updates.display_name || profile?.display_name || user.email?.split('@')[0],
+              display_name: updates.display_name || profile?.display_name,
+              avatar_url: updates.avatar_url || profile?.avatar_url,
+              profile: updated
+            }
+          });
+        } catch (metaErr) {
+          console.warn('Profile user_metadata update warning:', metaErr);
+        }
+      }
+
+      // 2. Also sync to profiles relational table if present
       const { error } = await supabase
         .from('profiles')
         .upsert(updated);
 
       if (error) {
-        console.warn('Supabase profile update warning:', error.message);
+        console.warn('Supabase profile table update warning:', error.message);
       }
       setProfile(updated);
+      localStorage.setItem(`listenup_profile_${user.id}`, JSON.stringify(updated));
       return { success: true, data: updated };
     } catch (err) {
       console.error('Error updating profile:', err);
-      // Still update local profile state so UI is responsive
       if (updates) {
         setProfile(prev => ({ ...(prev || {}), ...updates }));
         return { success: true, data: { ...profile, ...updates } };
@@ -290,10 +465,8 @@ export function AuthProvider({ children }) {
     explicitContent = true
   }) => {
     if (!user) {
-      // Guest completion support
-      localStorage.setItem('listenup_onboarding_completed_guest', 'true');
-      localStorage.removeItem('listenup_onboarding_draft');
-      return { success: true };
+      requireAuth(null, { message: 'Log in to save your music preferences.' });
+      return { success: false, requireAuth: true, error: 'Authentication required' };
     }
 
     try {
@@ -345,8 +518,23 @@ export function AuthProvider({ children }) {
       };
       setPreferences(newPrefs);
       localStorage.setItem(`listenup_user_prefs_${user.id}`, JSON.stringify(newPrefs));
+      localStorage.setItem('listenup_user_prefs_current', JSON.stringify(newPrefs));
 
-      // 4. If Supabase is connected, sync join tables
+      // 4. Persist to Supabase Auth user_metadata (permanent DB persistence without needing migrations)
+      if (isSupabaseConfigured) {
+        try {
+          await supabase.auth.updateUser({
+            data: {
+              preferences: newPrefs,
+              onboarding_completed: true
+            }
+          });
+        } catch (metaErr) {
+          console.warn('Supabase auth metadata update warning:', metaErr);
+        }
+      }
+
+      // 5. If Supabase is connected, attempt sync to relational join tables
       if (isSupabaseConfigured) {
         try {
           // Clear and sync user_genres
@@ -366,18 +554,27 @@ export function AuthProvider({ children }) {
           // Clear and sync user_favorite_artists
           await supabase.from('user_favorite_artists').delete().eq('user_id', user.id);
           if (artists.length > 0) {
-            const { data: dbArtists } = await supabase.from('artists').select('id, name');
+            const { data: dbArtists } = await supabase.from('artists').select('id, name, external_id');
             const artistInserts = [];
             for (const art of artists) {
               const artName = typeof art === 'string' ? art : art.name;
-              let match = (dbArtists || []).find(da => da.name.toLowerCase() === artName.toLowerCase());
+              const artExtId = typeof art === 'object' && art.id ? `deezer:${art.id}` : null;
+              const artImg = typeof art === 'object' ? (art.imageMedium || art.imageLarge || art.image || art.imageUrl) : null;
+
+              let match = (dbArtists || []).find(da => 
+                (artExtId && da.external_id === artExtId) || 
+                da.name.toLowerCase() === artName.toLowerCase()
+              );
               if (!match) {
-                // Insert new artist into catalog
+                // Insert new artist into catalog with Deezer metadata
                 const { data: newArt } = await supabase.from('artists').insert({
                   name: artName,
-                  image_url: typeof art === 'object' ? art.imageUrl : null
+                  image_url: artImg,
+                  external_id: artExtId
                 }).select().single();
                 match = newArt;
+              } else if (artImg && !match.image_url) {
+                await supabase.from('artists').update({ image_url: artImg, external_id: artExtId }).eq('id', match.id);
               }
               if (match) {
                 artistInserts.push({ user_id: user.id, artist_id: match.id });
@@ -416,7 +613,10 @@ export function AuthProvider({ children }) {
 
   // Restart onboarding
   const restartOnboarding = async () => {
-    if (!user) return;
+    if (!user) {
+      requireAuth(null, { message: 'Log in to manage your music preferences.' });
+      return { success: false, requireAuth: true, error: 'Authentication required' };
+    }
     try {
       localStorage.setItem(`listenup_needs_onboarding_${user.id}`, 'true');
       localStorage.removeItem(`listenup_onboarding_completed_${user.id}`);
@@ -428,56 +628,29 @@ export function AuthProvider({ children }) {
 
   // Skip onboarding and immediately launch app
   const skipOnboarding = async () => {
-    const targetId = user?.id || 'guest';
+    if (!user) {
+      return { success: false, requireAuth: true, error: 'Authentication required' };
+    }
+    const targetId = user.id;
     localStorage.setItem(`listenup_onboarding_completed_${targetId}`, 'true');
     localStorage.removeItem(`listenup_needs_onboarding_${targetId}`);
     localStorage.removeItem('listenup_onboarding_draft');
     sessionStorage.removeItem('listenup_just_signed_up');
 
-    if (user) {
-      const updated = { ...(profile || {}), onboarding_completed: true };
-      setProfile(updated);
-      localStorage.setItem(`listenup_profile_${user.id}`, JSON.stringify(updated));
-      try {
-        await supabase.from('profiles').upsert({ id: user.id, onboarding_completed: true });
-      } catch (e) {
-        console.warn('Skip onboarding upsert warning:', e);
-      }
-    } else {
-      setProfile(prev => ({ ...(prev || {}), onboarding_completed: true }));
+    const updated = { ...(profile || {}), onboarding_completed: true };
+    setProfile(updated);
+    localStorage.setItem(`listenup_profile_${user.id}`, JSON.stringify(updated));
+    try {
+      await supabase.from('profiles').upsert({ id: user.id, onboarding_completed: true });
+    } catch (e) {
+      console.warn('Skip onboarding upsert warning:', e);
     }
     return { success: true };
   };
 
-  // Migrate guest favorites and playlists into user's account
+  // Migrate guest favorites and playlists into user's account (obsolete - zero guest persistence)
   const migrateGuestData = async (guestFavorites = [], guestPlaylists = []) => {
-    if (!user) return { success: false };
-    try {
-      if (isSupabaseConfigured) {
-        // Sync favorites
-        if (guestFavorites.length > 0) {
-          const favRows = guestFavorites.map(song => ({
-            user_id: user.id,
-            song_id: song.id,
-            song_data: song
-          }));
-          await supabase.from('user_favorites').upsert(favRows, { onConflict: 'user_id, song_id' });
-        }
-        // Sync playlists
-        if (guestPlaylists.length > 0) {
-          const playlistRows = guestPlaylists.map(pl => ({
-            user_id: user.id,
-            name: pl.name,
-            songs: pl.songs || []
-          }));
-          await supabase.from('user_playlists').insert(playlistRows);
-        }
-      }
-      return { success: true };
-    } catch (e) {
-      console.warn('Error migrating guest data to cloud:', e);
-      return { success: false, error: e.message };
-    }
+    return { success: true };
   };
 
   const value = {
@@ -488,6 +661,10 @@ export function AuthProvider({ children }) {
     loading,
     authError,
     isSupabaseConfigured,
+    authModalState,
+    requireAuth,
+    openAuthModal,
+    closeAuthModal,
     signIn,
     signUp,
     signOut,

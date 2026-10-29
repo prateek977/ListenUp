@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../lib/authContext';
 import { STARTER_GENRES, STARTER_ARTISTS, STARTER_LANGUAGES, LISTENING_MOODS, LISTENING_ACTIVITIES } from '../../lib/starterCatalog';
+import { searchArtists, formatFanCount, getArtistInitials } from '../../lib/artistClient';
 
 export default function ProfileSettingsModal({ isOpen, onClose }) {
   const { user, profile, preferences, updateProfile, saveOnboardingData, restartOnboarding, signOut } = useAuth();
@@ -14,6 +15,13 @@ export default function ProfileSettingsModal({ isOpen, onClose }) {
   const [selectedActivities, setSelectedActivities] = useState([]);
   const [explicitPreference, setExplicitPreference] = useState(true);
   const [artistSearch, setArtistSearch] = useState('');
+  const [artistDebounceQuery, setArtistDebounceQuery] = useState('');
+  const [deezerArtists, setDeezerArtists] = useState([]);
+  const [loadingArtists, setLoadingArtists] = useState(false);
+  const [loadingMoreArtists, setLoadingMoreArtists] = useState(false);
+  const [hasMoreArtists, setHasMoreArtists] = useState(false);
+  const [nextArtistIndex, setNextArtistIndex] = useState(null);
+  const [brokenImages, setBrokenImages] = useState({});
   
   const [saving, setSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
@@ -33,6 +41,84 @@ export default function ProfileSettingsModal({ isOpen, onClose }) {
       setSaveSuccess(false);
     }
   }, [isOpen, profile, preferences, user]);
+
+  // Debounce artist search query by 300ms
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setArtistDebounceQuery(artistSearch.trim());
+    }, 300);
+    return () => clearTimeout(handler);
+  }, [artistSearch]);
+
+  // Fetch Deezer artists when modal is open and on preferences tab
+  useEffect(() => {
+    if (!isOpen || activeTab !== 'preferences') return;
+    let cancelled = false;
+    const controller = new AbortController();
+
+    async function load() {
+      setLoadingArtists(true);
+      try {
+        const data = await searchArtists({
+          query: artistDebounceQuery,
+          limit: 18,
+          index: 0,
+          signal: controller.signal
+        });
+        if (!cancelled) {
+          setDeezerArtists(data.artists || []);
+          setHasMoreArtists(Boolean(data.hasMore));
+          setNextArtistIndex(data.nextIndex ?? null);
+        }
+      } catch (err) {
+        if (!cancelled && err.name !== 'AbortError') {
+          console.warn('Deezer artist fetch error in settings:', err);
+          const fallback = STARTER_ARTISTS.map(sa => ({
+            id: sa.id,
+            name: sa.name,
+            image: sa.imageUrl,
+            imageMedium: sa.imageUrl,
+            genre: sa.genre,
+            fanCount: 0
+          }));
+          setDeezerArtists(fallback);
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingArtists(false);
+        }
+      }
+    }
+
+    load();
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [isOpen, activeTab, artistDebounceQuery]);
+
+  const handleLoadMoreArtists = async () => {
+    if (loadingMoreArtists || !hasMoreArtists) return;
+    setLoadingMoreArtists(true);
+    try {
+      const data = await searchArtists({
+        query: artistDebounceQuery,
+        limit: 18,
+        index: nextArtistIndex || 0
+      });
+      setDeezerArtists(prev => {
+        const existingIds = new Set(prev.map(a => String(a.id)));
+        const newOnes = (data.artists || []).filter(a => !existingIds.has(String(a.id)));
+        return [...prev, ...newOnes];
+      });
+      setHasMoreArtists(Boolean(data.hasMore));
+      setNextArtistIndex(data.nextIndex ?? null);
+    } catch (err) {
+      console.warn('Error loading more artists:', err);
+    } finally {
+      setLoadingMoreArtists(false);
+    }
+  };
 
   if (!isOpen) return null;
 
@@ -137,11 +223,7 @@ export default function ProfileSettingsModal({ isOpen, onClose }) {
     onClose();
   };
 
-  const filteredArtists = STARTER_ARTISTS.filter(a => 
-    !artistSearch.trim() || 
-    a.name.toLowerCase().includes(artistSearch.toLowerCase()) || 
-    a.genre.toLowerCase().includes(artistSearch.toLowerCase())
-  );
+
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fade-in">
@@ -320,36 +402,140 @@ export default function ProfileSettingsModal({ isOpen, onClose }) {
                   </span>
                 </div>
 
-                <input
-                  type="text"
-                  placeholder="Filter or search artists..."
-                  value={artistSearch}
-                  onChange={(e) => setArtistSearch(e.target.value)}
-                  className="w-full px-3.5 py-2 rounded-xl bg-white/[0.04] border border-white/[0.08] focus:border-[#D5F36A] text-xs text-white focus:outline-none"
-                />
-
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 max-h-48 overflow-y-auto custom-scrollbar p-1">
-                  {filteredArtists.map(artist => {
-                    const isSelected = selectedArtists.some(a => (typeof a === 'string' ? a : a.name) === artist.name);
-                    return (
-                      <div
-                        key={artist.id}
-                        onClick={() => handleToggleArtist(artist)}
-                        className={`p-2 rounded-xl border flex items-center gap-2 cursor-pointer transition-all ${
-                          isSelected
-                            ? 'bg-[#D5F36A]/15 border-[#D5F36A] text-white'
-                            : 'bg-white/[0.03] hover:bg-white/[0.06] border-white/[0.08] text-slate-300'
-                        }`}
-                      >
-                        <img src={artist.imageUrl} alt={artist.name} className="w-8 h-8 rounded-full object-cover flex-shrink-0" />
-                        <div className="truncate flex-1">
-                          <p className="text-xs font-bold truncate">{artist.name}</p>
-                          <p className="text-[10px] text-slate-400 truncate">{artist.genre}</p>
+                {/* Selected Artists Chips */}
+                {selectedArtists.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 max-h-20 overflow-y-auto custom-scrollbar p-1 rounded-xl bg-white/[0.02] border border-white/[0.06]">
+                    {selectedArtists.map((art) => {
+                      const artName = typeof art === 'string' ? art : art.name;
+                      const artId = typeof art === 'string' ? art : (art.id || art.name);
+                      const artImg = typeof art === 'object' ? (art.imageMedium || art.image) : null;
+                      return (
+                        <div
+                          key={`pref-sel-${artId}`}
+                          className="flex items-center gap-1.5 pl-1 pr-2 py-0.5 rounded-full bg-white/[0.06] border border-[#D5F36A]/30 text-white text-[11px] group"
+                        >
+                          <div className="w-4 h-4 rounded-full overflow-hidden bg-slate-800 flex items-center justify-center text-[8px] font-bold text-[#D5F36A]">
+                            {artImg && !brokenImages[`sel-${artId}`] ? (
+                              <img
+                                src={artImg}
+                                alt={artName}
+                                className="w-full h-full object-cover"
+                                onError={() => setBrokenImages(prev => ({ ...prev, [`sel-${artId}`]: true }))}
+                              />
+                            ) : (
+                              getArtistInitials(artName)
+                            )}
+                          </div>
+                          <span className="max-w-[100px] truncate">{artName}</span>
+                          <button
+                            type="button"
+                            onClick={() => handleToggleArtist(art)}
+                            className="text-[#9999A6] hover:text-white p-0.5"
+                          >
+                            ×
+                          </button>
                         </div>
-                        {isSelected && <span className="text-[#D5F36A] text-xs">✓</span>}
+                      );
+                    })}
+                  </div>
+                )}
+
+                <div className="relative">
+                  <input
+                    type="text"
+                    placeholder="Search artists dynamically via Deezer (e.g. Arijit Singh, Taylor Swift)..."
+                    value={artistSearch}
+                    onChange={(e) => setArtistSearch(e.target.value)}
+                    className="w-full px-3.5 py-2 pl-9 rounded-xl bg-white/[0.04] border border-white/[0.08] focus:border-[#D5F36A] text-xs text-white focus:outline-none"
+                  />
+                  <svg xmlns="http://www.w3.org/2000/svg" className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-[#9999A6]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                  </svg>
+                </div>
+
+                <div className="max-h-56 overflow-y-auto custom-scrollbar p-1">
+                  {loadingArtists && deezerArtists.length === 0 ? (
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                      {[...Array(6)].map((_, i) => (
+                        <div key={`s-skele-${i}`} className="p-2 rounded-xl bg-white/[0.03] border border-white/[0.06] flex items-center gap-2 animate-pulse">
+                          <div className="w-8 h-8 rounded-full bg-white/[0.08] flex-shrink-0" />
+                          <div className="flex-1 space-y-1">
+                            <div className="w-16 h-2.5 rounded bg-white/[0.08]" />
+                            <div className="w-10 h-2 rounded bg-white/[0.04]" />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : deezerArtists.length === 0 ? (
+                    <div className="text-center py-6 text-xs text-[#9999A6]">
+                      No artists found. Type a query to search the Deezer catalog.
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+                        {deezerArtists.map(artist => {
+                          const isSelected = selectedArtists.some(a => {
+                            if (typeof a === 'string') return a.toLowerCase() === artist.name.toLowerCase();
+                            return String(a.id) === String(artist.id) || a.name.toLowerCase() === artist.name.toLowerCase();
+                          });
+                          const hasPhoto = Boolean(artist.image && !brokenImages[artist.id]);
+
+                          return (
+                            <div
+                              key={`set-${artist.id}`}
+                              onClick={() => handleToggleArtist(artist)}
+                              className={`p-2 rounded-xl border flex items-center gap-2 cursor-pointer transition-all ${
+                                isSelected
+                                  ? 'bg-[#D5F36A]/15 border-[#D5F36A] text-white shadow-sm'
+                                  : 'bg-white/[0.03] hover:bg-white/[0.06] border-white/[0.08] text-slate-300'
+                              }`}
+                            >
+                              <div className="w-9 h-9 rounded-full overflow-hidden bg-slate-800 flex-shrink-0 flex items-center justify-center border border-white/[0.08]">
+                                {hasPhoto ? (
+                                  <img
+                                    src={artist.imageMedium || artist.image}
+                                    alt={artist.name}
+                                    loading="lazy"
+                                    onError={() => setBrokenImages(prev => ({ ...prev, [artist.id]: true }))}
+                                    className="w-full h-full object-cover"
+                                  />
+                                ) : (
+                                  <span className="text-[10px] font-bold text-[#D5F36A]">
+                                    {getArtistInitials(artist.name)}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="truncate flex-1 min-w-0">
+                                <p className="text-xs font-bold truncate">{artist.name}</p>
+                                <p className="text-[10px] text-[#9999A6] truncate">
+                                  {artist.fanCount > 0 ? formatFanCount(artist.fanCount) : (artist.genre || 'Deezer')}
+                                </p>
+                              </div>
+                              {isSelected && <span className="text-[#D5F36A] text-xs font-bold">✓</span>}
+                            </div>
+                          );
+                        })}
                       </div>
-                    );
-                  })}
+
+                      {hasMoreArtists && (
+                        <div className="text-center pt-1">
+                          <button
+                            type="button"
+                            onClick={handleLoadMoreArtists}
+                            disabled={loadingMoreArtists}
+                            className="px-3 py-1 rounded-full bg-white/[0.06] hover:bg-white/[0.1] text-[11px] font-bold text-white transition-all cursor-pointer"
+                          >
+                            {loadingMoreArtists ? 'Loading...' : 'Load More'}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div className="text-[10px] text-[#666674] pt-1 flex items-center gap-1">
+                  <span>Artist discovery powered by</span>
+                  <strong className="text-[#9999A6]">Deezer API</strong>
                 </div>
               </div>
 

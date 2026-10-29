@@ -28,133 +28,133 @@ export const STARTER_ARTISTS = [
     id: 'arijit-singh',
     name: 'Arijit Singh',
     genre: 'Bollywood / Soul',
-    imageUrl: 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300&auto=format&fit=crop&q=80',
+    imageUrl: 'https://cdn-images.dzcdn.net/images/artist/ac5350cff290edd5b69fa584b8b1bd4f/250x250-000000-80-0-0.jpg',
     trendingTag: 'Top Indian Artist'
   },
   {
     id: 'shreya-ghoshal',
     name: 'Shreya Ghoshal',
     genre: 'Melody / Classical',
-    imageUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=300&auto=format&fit=crop&q=80',
+    imageUrl: 'https://cdn-images.dzcdn.net/images/artist/3bb832d37d10ff2affcfa9afdc7c68a0/250x250-000000-80-0-0.jpg',
     trendingTag: 'Nightingale'
   },
   {
     id: 'pritam',
     name: 'Pritam',
     genre: 'Bollywood / Rock',
-    imageUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=300&auto=format&fit=crop&q=80',
+    imageUrl: 'https://cdn-images.dzcdn.net/images/artist/d4914ccd414067cd5e2c108867079a85/250x250-000000-80-0-0.jpg',
     trendingTag: 'Hit Composer'
   },
   {
     id: 'ar-rahman',
     name: 'A. R. Rahman',
     genre: 'Symphonic / World',
-    imageUrl: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=300&auto=format&fit=crop&q=80',
+    imageUrl: 'https://cdn-images.dzcdn.net/images/artist/bd34315ef977a62a9e28c1ab19bb8ac4/250x250-000000-80-0-0.jpg',
     trendingTag: 'Maestro'
   },
   {
     id: 'diljit-dosanjh',
     name: 'Diljit Dosanjh',
     genre: 'Punjabi / Pop',
-    imageUrl: 'https://images.unsplash.com/photo-1519085360753-af0119f7cbe7?w=300&auto=format&fit=crop&q=80',
+    imageUrl: 'https://cdn-images.dzcdn.net/images/artist/79b85e695e0ca6529e56bf3b628e92bd/250x250-000000-80-0-0.jpg',
     trendingTag: 'Global Icon'
   },
   {
     id: 'ap-dhillon',
     name: 'AP Dhillon',
     genre: 'Punjabi / Trap',
-    imageUrl: 'https://images.unsplash.com/photo-1492562080023-ab3db95bfbce?w=300&auto=format&fit=crop&q=80',
+    imageUrl: 'https://cdn-images.dzcdn.net/images/artist/52594ac9fa763dc163ed13d21cb130ec/250x250-000000-80-0-0.jpg',
     trendingTag: 'Brown Munde'
   },
   {
     id: 'karan-aujla',
     name: 'Karan Aujla',
     genre: 'Punjabi / Rap',
-    imageUrl: 'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=300&auto=format&fit=crop&q=80',
+    imageUrl: 'https://cdn-images.dzcdn.net/images/artist/a91a1d5ea91e85e4f0966569b50e8d6a/250x250-000000-80-0-0.jpg',
     trendingTag: 'Chartbuster'
   },
   {
     id: 'the-weeknd',
     name: 'The Weeknd',
     genre: 'R&B / Synthpop',
-    imageUrl: 'https://images.unsplash.com/photo-1522075469751-3a6694fb2f61?w=300&auto=format&fit=crop&q=80',
+    imageUrl: 'https://cdn-images.dzcdn.net/images/artist/581693b4724a7fcfa754455101e13a44/250x250-000000-80-0-0.jpg',
     trendingTag: 'XO'
   },
   {
     id: 'drake',
     name: 'Drake',
     genre: 'Hip-Hop / Rap',
-    imageUrl: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=300&auto=format&fit=crop&q=80',
+    imageUrl: 'https://cdn-images.dzcdn.net/images/artist/eb0ed5b21d1ea5af021fc074ded0e91f/250x250-000000-80-0-0.jpg',
     trendingTag: 'OVO'
   },
   {
     id: 'taylor-swift',
     name: 'Taylor Swift',
     genre: 'Pop / Folk',
-    imageUrl: 'https://images.unsplash.com/photo-1524504388940-b1c1722653e1?w=300&auto=format&fit=crop&q=80',
+    imageUrl: 'https://cdn-images.dzcdn.net/images/artist/cc2495870fe1a792ad0cdb05501ad5ec/250x250-000000-80-0-0.jpg',
     trendingTag: 'Global Star'
   },
   {
     id: 'ed-sheeran',
     name: 'Ed Sheeran',
     genre: 'Acoustic / Pop',
-    imageUrl: 'https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?w=300&auto=format&fit=crop&q=80',
+    imageUrl: 'https://cdn-images.dzcdn.net/images/artist/d6bb84390641d8ae9118228d9544e53d/250x250-000000-80-0-0.jpg',
     trendingTag: 'Songwriter'
   },
   {
     id: 'alan-walker',
     name: 'Alan Walker',
     genre: 'EDM / Electro',
-    imageUrl: 'https://images.unsplash.com/photo-1516280440614-37939bbacd81?w=300&auto=format&fit=crop&q=80',
+    imageUrl: 'https://cdn-images.dzcdn.net/images/artist/3117e89ee2aa2b06585a84d10a172728/250x250-000000-80-0-0.jpg',
     trendingTag: 'Faded'
   },
   {
     id: 'billie-eilish',
     name: 'Billie Eilish',
     genre: 'Alt-Pop / Dark',
-    imageUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=300&auto=format&fit=crop&q=80',
+    imageUrl: 'https://cdn-images.dzcdn.net/images/artist/8eab1a9a644889aabaca1e193e05f984/250x250-000000-80-0-0.jpg',
     trendingTag: 'Grammy Winner'
   },
   {
     id: 'eminem',
     name: 'Eminem',
     genre: 'Rap / Hip-Hop',
-    imageUrl: 'https://images.unsplash.com/photo-1501196354995-cbb51c65aaea?w=300&auto=format&fit=crop&q=80',
+    imageUrl: 'https://cdn-images.dzcdn.net/images/artist/7fa738468c9a73ff98c1e1b78d622b81/250x250-000000-80-0-0.jpg',
     trendingTag: 'Rap Legend'
   },
   {
     id: 'travis-scott',
     name: 'Travis Scott',
     genre: 'Trap / Psychedelic',
-    imageUrl: 'https://images.unsplash.com/photo-1508214751196-bcfd4ca60f91?w=300&auto=format&fit=crop&q=80',
+    imageUrl: 'https://cdn-images.dzcdn.net/images/artist/8d8316146026d7e6ce377e314536df62/250x250-000000-80-0-0.jpg',
     trendingTag: 'Cactus Jack'
   },
   {
     id: 'sonu-nigam',
     name: 'Sonu Nigam',
     genre: 'Bollywood / Soul',
-    imageUrl: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=300&auto=format&fit=crop&q=80',
+    imageUrl: 'https://cdn-images.dzcdn.net/images/artist/812220125c4f0db57050438b65afcf78/250x250-000000-80-0-0.jpg',
     trendingTag: 'Golden Voice'
   },
   {
     id: 'sunidhi-chauhan',
     name: 'Sunidhi Chauhan',
     genre: 'Power Vocals / Pop',
-    imageUrl: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=300&auto=format&fit=crop&q=80',
+    imageUrl: 'https://cdn-images.dzcdn.net/images/artist/37dbd33ae8cf7075e247968acf4b48da/250x250-000000-80-0-0.jpg',
     trendingTag: 'Live Icon'
   },
   {
     id: 'ayushmann-khurrana',
     name: 'Ayushmann Khurrana',
     genre: 'Indie / Acoustic',
-    imageUrl: 'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=300&auto=format&fit=crop&q=80',
+    imageUrl: 'https://cdn-images.dzcdn.net/images/artist/06a7157d7046b8a6007af5a81de014fb/250x250-000000-80-0-0.jpg',
     trendingTag: 'Pani Da Rang'
   },
   {
     id: 'jubin-nautiyal',
     name: 'Jubin Nautiyal',
     genre: 'Romantic / Sufi',
-    imageUrl: 'https://images.unsplash.com/photo-1492562080023-ab3db95bfbce?w=300&auto=format&fit=crop&q=80',
+    imageUrl: 'https://cdn-images.dzcdn.net/images/artist/9031b483049b5551abcb11529873b4f6/250x250-000000-80-0-0.jpg',
     trendingTag: 'Lut Gaye'
   }
 ];

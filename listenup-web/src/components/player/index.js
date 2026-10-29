@@ -4,3 +4,7 @@ export { default as CircularVisualizer } from './CircularVisualizer';
 export { default as TrackMetadata } from './TrackMetadata';
 export { default as PlaybackProgress } from './PlaybackProgress';
 export { default as PlaybackControls } from './PlaybackControls';
+export { default as SongCard } from './SongCard';
+export { default as SongContextMenu } from './SongContextMenu';
+export { default as QueuePanel } from './QueuePanel';
+export { default as AddToPlaylistModal } from '../playlist/AddToPlaylistModal';

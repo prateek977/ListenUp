@@ -2,7 +2,13 @@ import React, { useState } from 'react';
 import { useAuth } from '../../lib/authContext';
 import { supabase, isSupabaseConfigured } from '../../lib/supabaseClient';
 
-export default function AuthModal({ isOpen, onClose, initialMode = 'signin' }) {
+export default function AuthModal({
+  isOpen,
+  onClose,
+  initialMode = 'signin',
+  message = null,
+  onAuthSuccess = null
+}) {
   const { signIn, signUp, resetPassword, authError } = useAuth();
   const [mode, setMode] = useState(initialMode); // 'signin' | 'signup' | 'forgot'
   const [email, setEmail] = useState('');
@@ -13,8 +19,43 @@ export default function AuthModal({ isOpen, onClose, initialMode = 'signin' }) {
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
+  const [resendingEmail, setResendingEmail] = useState(false);
+  const [resendSuccess, setResendSuccess] = useState(false);
+
+  // Update mode if initialMode changes
+  React.useEffect(() => {
+    if (isOpen) {
+      setMode(initialMode);
+      setErrorMessage('');
+      setSuccessMessage('');
+      setResendSuccess(false);
+    }
+  }, [isOpen, initialMode]);
 
   if (!isOpen) return null;
+
+  const handleResendConfirmation = async () => {
+    if (!email || !email.includes('@')) {
+      setErrorMessage('Please enter your email address to resend the confirmation link.');
+      return;
+    }
+    setResendingEmail(true);
+    setErrorMessage('');
+    try {
+      const { error } = await supabase.auth.resend({
+        type: 'signup',
+        email: email.trim()
+      });
+      if (error) throw error;
+      setResendSuccess(true);
+      setSuccessMessage(`Confirmation email resent to ${email}! Check your inbox and spam folder.`);
+      setTimeout(() => setResendSuccess(false), 6000);
+    } catch (err) {
+      setErrorMessage(err.message || 'Failed to resend confirmation email.');
+    } finally {
+      setResendingEmail(false);
+    }
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -52,8 +93,17 @@ export default function AuthModal({ isOpen, onClose, initialMode = 'signin' }) {
       const res = await signUp({ email, password, displayName: displayName.trim() });
       setLoading(false);
       if (res.success) {
-        setSuccessMessage('Account created successfully! Welcome to ListenUp.');
-        setTimeout(() => onClose(), 800);
+        // If Supabase has email confirmation enabled, session is null until confirmed
+        if (!res.data?.session && res.data?.user?.identities?.length > 0) {
+          setSuccessMessage(`Account created! A verification link has been sent to ${email}. Please check your inbox (and spam) to confirm your email before signing in.`);
+          setMode('signin');
+        } else {
+          setSuccessMessage('Account created successfully! Welcome to ListenUp.');
+          setTimeout(() => {
+            onClose();
+            onAuthSuccess?.(res.data?.user);
+          }, 800);
+        }
       } else {
         setErrorMessage(res.error || 'Sign up failed.');
       }
@@ -66,6 +116,7 @@ export default function AuthModal({ isOpen, onClose, initialMode = 'signin' }) {
     setLoading(false);
     if (res.success) {
       onClose();
+      onAuthSuccess?.(res.data?.user);
     } else {
       setErrorMessage(res.error || 'Invalid email or password.');
     }
@@ -115,7 +166,7 @@ export default function AuthModal({ isOpen, onClose, initialMode = 'signin' }) {
         </button>
 
         {/* Brand Header */}
-        <div className="flex flex-col items-center text-center mb-6">
+        <div className="flex flex-col items-center text-center mb-5">
           <div className="w-12 h-12 rounded-2xl bg-[#D5F36A] flex items-center justify-center shadow-lg shadow-[#D5F36A]/20 mb-3">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6 text-black">
               <path fillRule="evenodd" d="M19.952 1.651a.75.75 0 0 1 .298.599V16.303a3 3 0 0 1-2.176 2.884l-1.32.377a2.553 2.553 0 1 1-1.403-4.909l2.311-.66a1.5 1.5 0 0 0 1.088-1.442V6.994l-9 2.572v9.737a3 3 0 0 1-2.176 2.884l-1.32.377a2.553 2.553 0 1 1-1.402-4.909l2.31-.66a1.5 1.5 0 0 0 1.088-1.442V5.25a.75.75 0 0 1 .544-.721l10.5-3a.75.75 0 0 1 .667.122Z" clipRule="evenodd" />
@@ -132,6 +183,18 @@ export default function AuthModal({ isOpen, onClose, initialMode = 'signin' }) {
             {mode === 'forgot' && 'Enter your email to receive recovery instructions'}
           </p>
         </div>
+
+        {/* Action Guard Notification Banner */}
+        {message && (
+          <div className="mb-5 p-3.5 rounded-2xl bg-[#D5F36A]/10 border border-[#D5F36A]/30 text-[#D5F36A] text-xs font-semibold flex items-center gap-3 shadow-md">
+            <div className="w-7 h-7 rounded-xl bg-[#D5F36A]/20 flex items-center justify-center flex-shrink-0 text-[#D5F36A]">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+                <path fillRule="evenodd" d="M10 1a4.5 4.5 0 00-4.5 4.5V9H5a2 2 0 00-2 2v6a2 2 0 002 2h10a2 2 0 002-2v-6a2 2 0 00-2-2h-.5V5.5A4.5 4.5 0 0010 1zm3 8V5.5a3 3 0 10-6 0V9h6z" clipRule="evenodd" />
+              </svg>
+            </div>
+            <span className="leading-snug">{message}</span>
+          </div>
+        )}
 
         {/* Tab Switcher */}
         {mode !== 'forgot' && (
@@ -163,11 +226,40 @@ export default function AuthModal({ isOpen, onClose, initialMode = 'signin' }) {
 
         {/* Alert Messages */}
         {errorMessage && (
-          <div className="mb-4 p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-2">
-            <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-            </svg>
-            <span>{errorMessage}</span>
+          <div className="mb-4 p-3.5 rounded-2xl bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs flex flex-col gap-2.5">
+            <div className="flex items-start gap-2.5">
+              <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+              <div className="flex-1 leading-relaxed">
+                {errorMessage.toLowerCase().includes('email not confirmed') ? (
+                  <div>
+                    <span className="font-bold text-rose-200 block mb-1">Email not confirmed yet</span>
+                    Supabase requires email verification before signing in. Check your inbox (or spam) for the confirmation link sent to <span className="text-white font-mono bg-white/10 px-1.5 py-0.5 rounded">{email || 'your email'}</span>.
+                  </div>
+                ) : (
+                  <span>{errorMessage}</span>
+                )}
+              </div>
+            </div>
+
+            {errorMessage.toLowerCase().includes('email not confirmed') && (
+              <button
+                type="button"
+                onClick={handleResendConfirmation}
+                disabled={resendingEmail || resendSuccess}
+                className="mt-0.5 self-start px-3 py-1.5 rounded-xl bg-white/[0.08] hover:bg-white/[0.15] border border-white/[0.12] text-white text-[11px] font-semibold transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+              >
+                {resendingEmail ? (
+                  <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                ) : (
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-3.5 h-3.5 text-[#D5F36A]">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
+                  </svg>
+                )}
+                <span>{resendSuccess ? 'Link Sent!' : 'Resend Confirmation Email'}</span>
+              </button>
+            )}
           </div>
         )}
 
