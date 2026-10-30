@@ -162,8 +162,9 @@ export default function AddToPlaylistModal({
         {/* Selected Song Preview Banner */}
         <div className="px-5 py-3 bg-white/[0.02] border-b border-white/[0.04] flex items-center gap-3">
           <img 
-            src={song.thumbnailUrl || 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=100&auto=format&fit=crop&q=80'} 
+            src={song.thumbnailUrl || '/default-artwork.svg'} 
             alt={song.title} 
+            onError={(e) => { e.currentTarget.src = '/default-artwork.svg'; }}
             className="w-10 h-10 rounded-xl object-cover border border-white/[0.08] shadow flex-shrink-0"
           />
           <div className="min-w-0 flex-1">

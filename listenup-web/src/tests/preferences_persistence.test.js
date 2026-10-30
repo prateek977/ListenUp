@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { STARTER_ARTISTS } from '../lib/starterCatalog.js';
 
 test('User Preferences Persistence & Home Shelf Logic', async (t) => {
-  await t.test('STARTER_ARTISTS uses authentic Deezer CDN images instead of Unsplash stock photos', () => {
+  await t.test('STARTER_ARTISTS uses authentic Deezer CDN images or verified local portraits instead of Unsplash stock photos', () => {
     assert.ok(STARTER_ARTISTS.length >= 15);
     for (const artist of STARTER_ARTISTS) {
       assert.ok(
@@ -11,8 +11,8 @@ test('User Preferences Persistence & Home Shelf Logic', async (t) => {
         `Artist "${artist.name}" must not use Unsplash stock image, found: ${artist.imageUrl}`
       );
       assert.ok(
-        artist.imageUrl.includes('dzcdn.net') || artist.imageUrl.startsWith('https://'),
-        `Artist "${artist.name}" must have a valid CDN image URL`
+        artist.imageUrl.startsWith('/artists/') || artist.imageUrl.includes('dzcdn.net') || artist.imageUrl.startsWith('https://'),
+        `Artist "${artist.name}" must have a valid portrait URL, found: ${artist.imageUrl}`
       );
     }
   });

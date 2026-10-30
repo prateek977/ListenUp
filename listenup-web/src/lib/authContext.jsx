@@ -171,8 +171,37 @@ export function AuthProvider({ children }) {
         localStorage.setItem(`listenup_profile_${userId}`, JSON.stringify(defaultProf));
       }
 
-      // 2. Fetch User Preferences
-      if (isSupabaseConfigured) {
+      // 2. Fetch User Preferences (Persistent Backend Database + Supabase Fallback)
+      let backendLoaded = false;
+      try {
+        const beRes = await fetch(`/api/user/preferences?userId=${userId}`);
+        if (beRes.ok) {
+          const beJson = await beRes.json();
+          if (beJson?.preferences && (
+            (beJson.preferences.genres?.length || 0) > 0 ||
+            (beJson.preferences.artists?.length || 0) > 0 ||
+            (beJson.preferences.languages?.length || 0) > 0
+          )) {
+            const bp = beJson.preferences;
+            const resolvedPrefs = {
+              genres: bp.genres || [],
+              artists: bp.artists || [],
+              languages: bp.languages || [],
+              moods: bp.moods || [],
+              activities: bp.activities || [],
+              explicit_content_preference: bp.explicit_content_preference ?? true
+            };
+            setPreferences(resolvedPrefs);
+            localStorage.setItem(`listenup_user_prefs_${userId}`, JSON.stringify(resolvedPrefs));
+            localStorage.setItem('listenup_user_prefs_current', JSON.stringify(resolvedPrefs));
+            backendLoaded = true;
+          }
+        }
+      } catch (beErr) {
+        console.warn('Backend database preferences fetch note:', beErr);
+      }
+
+      if (isSupabaseConfigured && !backendLoaded) {
         try {
           const [genresRes, artistsRes, langsRes, prefsRes] = await Promise.all([
             supabase.from('user_genres').select('genre_id, genres(name, slug)').eq('user_id', userId),
@@ -519,6 +548,17 @@ export function AuthProvider({ children }) {
       setPreferences(newPrefs);
       localStorage.setItem(`listenup_user_prefs_${user.id}`, JSON.stringify(newPrefs));
       localStorage.setItem('listenup_user_prefs_current', JSON.stringify(newPrefs));
+
+      // 3b. Persist to Backend SQLite Database (100% reliable local database persistence)
+      try {
+        await fetch('/api/user/preferences', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId: user.id, preferences: newPrefs })
+        });
+      } catch (beSaveErr) {
+        console.warn('Backend preferences database save note:', beSaveErr);
+      }
 
       // 4. Persist to Supabase Auth user_metadata (permanent DB persistence without needing migrations)
       if (isSupabaseConfigured) {

@@ -28,50 +28,113 @@ export const STARTER_ARTISTS = [
     id: 'arijit-singh',
     name: 'Arijit Singh',
     genre: 'Bollywood / Soul',
-    imageUrl: 'https://cdn-images.dzcdn.net/images/artist/ac5350cff290edd5b69fa584b8b1bd4f/250x250-000000-80-0-0.jpg',
+    imageUrl: '/artists/arijit-singh.jpg',
     trendingTag: 'Top Indian Artist'
-  },
-  {
-    id: 'shreya-ghoshal',
-    name: 'Shreya Ghoshal',
-    genre: 'Melody / Classical',
-    imageUrl: 'https://cdn-images.dzcdn.net/images/artist/3bb832d37d10ff2affcfa9afdc7c68a0/250x250-000000-80-0-0.jpg',
-    trendingTag: 'Nightingale'
   },
   {
     id: 'pritam',
     name: 'Pritam',
     genre: 'Bollywood / Rock',
-    imageUrl: 'https://cdn-images.dzcdn.net/images/artist/d4914ccd414067cd5e2c108867079a85/250x250-000000-80-0-0.jpg',
+    imageUrl: '/artists/pritam.jpg',
     trendingTag: 'Hit Composer'
   },
   {
-    id: 'ar-rahman',
-    name: 'A. R. Rahman',
-    genre: 'Symphonic / World',
-    imageUrl: 'https://cdn-images.dzcdn.net/images/artist/bd34315ef977a62a9e28c1ab19bb8ac4/250x250-000000-80-0-0.jpg',
-    trendingTag: 'Maestro'
+    id: 'vishal-mishra',
+    name: 'Vishal Mishra',
+    genre: 'Soul / Melody',
+    imageUrl: '/artists/vishal-mishra.png',
+    trendingTag: 'Pehle Bhi Main'
   },
   {
-    id: 'diljit-dosanjh',
-    name: 'Diljit Dosanjh',
-    genre: 'Punjabi / Pop',
-    imageUrl: 'https://cdn-images.dzcdn.net/images/artist/79b85e695e0ca6529e56bf3b628e92bd/250x250-000000-80-0-0.jpg',
-    trendingTag: 'Global Icon'
+    id: 'amit-trivedi',
+    name: 'Amit Trivedi',
+    genre: 'Indie / Fusion',
+    imageUrl: '/artists/amit-trivedi.jpg',
+    trendingTag: 'Iktara'
+  },
+  {
+    id: 'shreya-ghoshal',
+    name: 'Shreya Ghoshal',
+    genre: 'Melody / Classical',
+    imageUrl: '/artists/shreya-ghoshal.jpg',
+    trendingTag: 'Nightingale'
+  },
+  {
+    id: 'darshan-raval',
+    name: 'Darshan Raval',
+    genre: 'Pop / Romantic',
+    imageUrl: '/artists/darshan-raval.jpg',
+    trendingTag: 'Heartthrob'
   },
   {
     id: 'ap-dhillon',
     name: 'AP Dhillon',
     genre: 'Punjabi / Trap',
-    imageUrl: 'https://cdn-images.dzcdn.net/images/artist/52594ac9fa763dc163ed13d21cb130ec/250x250-000000-80-0-0.jpg',
+    imageUrl: '/artists/ap-dhillon.jpg',
     trendingTag: 'Brown Munde'
   },
   {
-    id: 'karan-aujla',
-    name: 'Karan Aujla',
-    genre: 'Punjabi / Rap',
-    imageUrl: 'https://cdn-images.dzcdn.net/images/artist/a91a1d5ea91e85e4f0966569b50e8d6a/250x250-000000-80-0-0.jpg',
-    trendingTag: 'Chartbuster'
+    id: 'king',
+    name: 'King',
+    genre: 'Hip-Hop / Pop',
+    imageUrl: '/artists/king.jpg',
+    trendingTag: 'Maan Meri Jaan'
+  },
+  {
+    id: 'anuv-jain',
+    name: 'Anuv Jain',
+    genre: 'Acoustic / Indie',
+    imageUrl: '/artists/anuv-jain.jpg',
+    trendingTag: 'Husn'
+  },
+  {
+    id: 'ritviz',
+    name: 'Ritviz',
+    genre: 'Electro-Folk / Dance',
+    imageUrl: '/artists/ritviz.jpg',
+    trendingTag: 'Liggi'
+  },
+  {
+    id: 'diljit-dosanjh',
+    name: 'Diljit Dosanjh',
+    genre: 'Punjabi / Pop',
+    imageUrl: '/artists/diljit-dosanjh.jpg',
+    trendingTag: 'Global Icon'
+  },
+  {
+    id: 'ar-rahman',
+    name: 'A. R. Rahman',
+    genre: 'Symphonic / World',
+    imageUrl: '/artists/ar-rahman.jpg',
+    trendingTag: 'Maestro'
+  },
+  {
+    id: 'sonu-nigam',
+    name: 'Sonu Nigam',
+    genre: 'Bollywood / Soul',
+    imageUrl: '/artists/sonu-nigam.jpg',
+    trendingTag: 'Golden Voice'
+  },
+  {
+    id: 'sunidhi-chauhan',
+    name: 'Sunidhi Chauhan',
+    genre: 'Power Vocals / Pop',
+    imageUrl: '/artists/sunidhi-chauhan.jpg',
+    trendingTag: 'Live Icon'
+  },
+  {
+    id: 'ayushmann-khurrana',
+    name: 'Ayushmann Khurrana',
+    genre: 'Indie / Acoustic',
+    imageUrl: '/artists/ayushmann-khurrana.jpg',
+    trendingTag: 'Pani Da Rang'
+  },
+  {
+    id: 'jubin-nautiyal',
+    name: 'Jubin Nautiyal',
+    genre: 'Romantic / Sufi',
+    imageUrl: '/artists/jubin-nautiyal.jpg',
+    trendingTag: 'Lut Gaye'
   },
   {
     id: 'the-weeknd',
@@ -102,13 +165,6 @@ export const STARTER_ARTISTS = [
     trendingTag: 'Songwriter'
   },
   {
-    id: 'alan-walker',
-    name: 'Alan Walker',
-    genre: 'EDM / Electro',
-    imageUrl: 'https://cdn-images.dzcdn.net/images/artist/3117e89ee2aa2b06585a84d10a172728/250x250-000000-80-0-0.jpg',
-    trendingTag: 'Faded'
-  },
-  {
     id: 'billie-eilish',
     name: 'Billie Eilish',
     genre: 'Alt-Pop / Dark',
@@ -116,46 +172,11 @@ export const STARTER_ARTISTS = [
     trendingTag: 'Grammy Winner'
   },
   {
-    id: 'eminem',
-    name: 'Eminem',
-    genre: 'Rap / Hip-Hop',
-    imageUrl: 'https://cdn-images.dzcdn.net/images/artist/7fa738468c9a73ff98c1e1b78d622b81/250x250-000000-80-0-0.jpg',
-    trendingTag: 'Rap Legend'
-  },
-  {
-    id: 'travis-scott',
-    name: 'Travis Scott',
-    genre: 'Trap / Psychedelic',
-    imageUrl: 'https://cdn-images.dzcdn.net/images/artist/8d8316146026d7e6ce377e314536df62/250x250-000000-80-0-0.jpg',
-    trendingTag: 'Cactus Jack'
-  },
-  {
-    id: 'sonu-nigam',
-    name: 'Sonu Nigam',
-    genre: 'Bollywood / Soul',
-    imageUrl: 'https://cdn-images.dzcdn.net/images/artist/812220125c4f0db57050438b65afcf78/250x250-000000-80-0-0.jpg',
-    trendingTag: 'Golden Voice'
-  },
-  {
-    id: 'sunidhi-chauhan',
-    name: 'Sunidhi Chauhan',
-    genre: 'Power Vocals / Pop',
-    imageUrl: 'https://cdn-images.dzcdn.net/images/artist/37dbd33ae8cf7075e247968acf4b48da/250x250-000000-80-0-0.jpg',
-    trendingTag: 'Live Icon'
-  },
-  {
-    id: 'ayushmann-khurrana',
-    name: 'Ayushmann Khurrana',
-    genre: 'Indie / Acoustic',
-    imageUrl: 'https://cdn-images.dzcdn.net/images/artist/06a7157d7046b8a6007af5a81de014fb/250x250-000000-80-0-0.jpg',
-    trendingTag: 'Pani Da Rang'
-  },
-  {
-    id: 'jubin-nautiyal',
-    name: 'Jubin Nautiyal',
-    genre: 'Romantic / Sufi',
-    imageUrl: 'https://cdn-images.dzcdn.net/images/artist/9031b483049b5551abcb11529873b4f6/250x250-000000-80-0-0.jpg',
-    trendingTag: 'Lut Gaye'
+    id: 'alan-walker',
+    name: 'Alan Walker',
+    genre: 'EDM / Electro',
+    imageUrl: 'https://cdn-images.dzcdn.net/images/artist/3117e89ee2aa2b06585a84d10a172728/250x250-000000-80-0-0.jpg',
+    trendingTag: 'Faded'
   }
 ];
 

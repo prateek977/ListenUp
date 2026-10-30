@@ -12,7 +12,7 @@ export default function AlbumArtwork({
   className = ''
 }) {
   const [imageError, setImageError] = useState(false);
-  const fallbackUrl = 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=600&auto=format&fit=crop&q=80';
+  const fallbackUrl = '/default-artwork.svg';
 
   const imageSrc = imageError || !src ? fallbackUrl : src;
 

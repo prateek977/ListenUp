@@ -73,7 +73,7 @@ export default function App() {
   }, []);
 
   // Navigation & Search State
-  const [activeCategoryFilter, setActiveCategoryFilter] = useState('music'); // 'music' | 'podcasts' | 'audiobooks' | 'live'
+  const [activeCategoryFilter, setActiveCategoryFilter] = useState('music'); // 'music' | 'live'
   const [isNotificationOpen, setIsNotificationOpen] = useState(false);
   const [activeHeroIndex, setActiveHeroIndex] = useState(0);
 
@@ -118,6 +118,8 @@ export default function App() {
   const [activePlaylistId, setActivePlaylistId] = useState(null);
   const [libraryFilter, setLibraryFilter] = useState('all'); // 'all' | 'playlists' | 'liked'
   const [newPlaylistName, setNewPlaylistName] = useState('');
+  const [showAllPlaylists, setShowAllPlaylists] = useState(false);
+  const [heroIndex, setHeroIndex] = useState(0);
   const [isPlayerReady, setIsPlayerReady] = useState(false);
 
   // Playback State
@@ -150,8 +152,24 @@ export default function App() {
           if (cachedPls) cloudPls = JSON.parse(cachedPls);
         } catch {}
 
+        // 1. Fetch from persistent backend SQLite database
+        try {
+          const [beFavRes, bePlRes] = await Promise.all([
+            fetch(`/api/user/favorites?userId=${user.id}`).then(r => r.ok ? r.json() : null),
+            fetch(`/api/user/playlists?userId=${user.id}`).then(r => r.ok ? r.json() : null)
+          ]);
+          if (beFavRes?.favorites && beFavRes.favorites.length > 0) {
+            cloudFavs = beFavRes.favorites;
+          }
+          if (bePlRes?.playlists && bePlRes.playlists.length > 0) {
+            cloudPls = bePlRes.playlists;
+          }
+        } catch (beSyncErr) {
+          console.warn('Backend user favorites/playlists note:', beSyncErr);
+        }
+
         if (isSupabaseConfigured) {
-          // 1. Fetch user favorites & playlists from relational tables or user_metadata
+          // 2. Also attempt Supabase relational tables or user_metadata
           try {
             const [favRes, plsRes] = await Promise.all([
               supabase.from('user_favorites').select('song_data').eq('user_id', user.id),
@@ -1424,6 +1442,19 @@ export default function App() {
     // Record listening event for recommendation scoring
     sendListenEvent(isAlreadyFav ? 'song_unliked' : 'song_liked', { metadata: { source: 'favorites_toggle' } }, song);
 
+    // Persistent backend database sync
+    if (user?.id) {
+      if (isAlreadyFav) {
+        fetch(`/api/user/favorites/${song.id}?userId=${user.id}`, { method: 'DELETE' }).catch(() => {});
+      } else {
+        fetch('/api/user/favorites', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId: user.id, song })
+        }).catch(() => {});
+      }
+    }
+
     // Database cloud sync if authenticated
     if (user?.id && isSupabaseConfigured) {
       // 1. Always persist to Supabase Auth database (guaranteed cloud storage)
@@ -1476,6 +1507,19 @@ export default function App() {
       localStorage.setItem(`listenup_playlists_${user.id}`, JSON.stringify(nextPlaylists));
     } catch {}
 
+    // Persistent backend database sync
+    if (user?.id) {
+      fetch('/api/user/playlists', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: user.id, name: cleanName, songs: [] })
+      }).then(r => r.ok ? r.json() : null).then(data => {
+        if (data?.playlist?.id) {
+          setPlaylists(prev => prev.map(p => p.id === tempId ? { ...p, id: data.playlist.id } : p));
+        }
+      }).catch(() => {});
+    }
+
     if (user?.id && isSupabaseConfigured) {
       // 1. Immediately persist to Supabase Auth database
       supabase.auth.updateUser({ data: { playlists: nextPlaylists } }).catch(() => {});
@@ -1519,6 +1563,11 @@ export default function App() {
     } catch {}
     if (activePlaylistId === playlistId) {
       setActivePlaylistId(null);
+    }
+
+    // Persistent backend database sync
+    if (user?.id) {
+      fetch(`/api/user/playlists/${playlistId}?userId=${user.id}`, { method: 'DELETE' }).catch(() => {});
     }
 
     if (user?.id && isSupabaseConfigured) {
@@ -1575,6 +1624,18 @@ export default function App() {
 
     // Record listening event for recommendation scoring
     sendListenEvent('playlist_added', { metadata: { playlistId } }, song);
+
+    // Persistent backend database sync
+    if (user?.id) {
+      const plToUpdate = nextPlaylists.find(p => p.id === playlistId);
+      if (plToUpdate) {
+        fetch(`/api/user/playlists/${playlistId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId: user.id, songs: plToUpdate.songs })
+        }).catch(() => {});
+      }
+    }
 
     // Database cloud sync if authenticated
     if (user?.id && isSupabaseConfigured) {
@@ -1648,6 +1709,15 @@ export default function App() {
     try {
       localStorage.setItem(`listenup_playlists_${user.id}`, JSON.stringify(filteredPlaylists));
     } catch {}
+
+    // Persistent backend database sync
+    if (user?.id) {
+      fetch(`/api/user/playlists/${playlistId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: user.id, songs: filteredSongs })
+      }).catch(() => {});
+    }
 
     if (user?.id && isSupabaseConfigured) {
       // 1. Immediately persist to Supabase Auth database
@@ -1885,13 +1955,16 @@ export default function App() {
       try {
         const res = await searchArtists({ query: '', limit: 18, index: 0 });
         if (!cancelled && res?.artists && res.artists.length > 0) {
-          const mapped = res.artists.map(a => ({
-            id: a.id,
-            name: a.name,
-            img: a.imageMedium || a.image || a.imageLarge,
-            query: `${a.name} best songs official`,
-            deezerUrl: a.deezerUrl
-          }));
+          const mapped = res.artists.map(a => {
+            const verified = STARTER_ARTISTS.find(sa => sa.name.toLowerCase() === a.name.toLowerCase());
+            return {
+              id: a.id,
+              name: a.name,
+              img: verified?.imageUrl || a.imageMedium || a.image || a.imageLarge,
+              query: `${a.name} best songs official`,
+              deezerUrl: a.deezerUrl
+            };
+          });
           setDynamicPopularArtists(mapped);
         }
       } catch (err) {
@@ -1912,13 +1985,13 @@ export default function App() {
 
     const userFavs = userFavList.map(art => {
       const name = typeof art === 'string' ? art : art.name;
-      // Match from dynamic Deezer artists or starter catalog for exact photo
-      const matched = dynamicPopularArtists.find(da => da.name.toLowerCase() === name.toLowerCase())
-        || STARTER_ARTISTS.find(sa => sa.name.toLowerCase() === name.toLowerCase());
+      // Match from verified starter catalog or dynamic Deezer artists for authentic photo
+      const matched = STARTER_ARTISTS.find(sa => sa.name.toLowerCase() === name.toLowerCase())
+        || dynamicPopularArtists.find(da => da.name.toLowerCase() === name.toLowerCase());
 
-      const imgUrl = (typeof art === 'object' && (art.imageMedium || art.image || art.imageLarge || art.imageUrl))
+      const imgUrl = matched?.imageUrl
         || matched?.img
-        || matched?.imageUrl
+        || (typeof art === 'object' && (art.imageMedium || art.image || art.imageLarge || art.imageUrl))
         || null;
 
       return {
@@ -1954,21 +2027,21 @@ export default function App() {
         )}
 
         {/* Left Sidebar */}
-        <aside className={`fixed md:relative inset-y-0 left-0 md:inset-auto transform ${isMobileMenuOpen ? 'translate-x-0 shadow-[0_0_50px_rgba(0,0,0,0.9)]' : '-translate-x-full'} md:translate-x-0 w-72 max-w-[80vw] h-full bg-[#08080D] border-r border-white/[0.08] flex flex-col z-50 md:z-20 transition-transform duration-300 ease-out flex-shrink-0`}>
+        <aside className={`fixed md:relative inset-y-0 left-0 md:inset-auto transform ${isMobileMenuOpen ? 'translate-x-0 shadow-[0_0_50px_rgba(0,0,0,0.9)]' : '-translate-x-full'} md:translate-x-0 w-64 md:w-72 max-w-[80vw] h-full bg-[#0B0B0F] border-r border-white/[0.08] flex flex-col z-50 md:z-20 transition-transform duration-300 ease-out flex-shrink-0`}>
         {/* App Branding */}
-        <div className="p-6 flex items-center justify-between border-b border-white/[0.06]">
+        <div className="p-5 flex items-center justify-between border-b border-white/[0.06]">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-[#D5F36A]/10 border border-[#D5F36A]/30 flex items-center justify-center p-1.5 shadow-lg shadow-[#D5F36A]/5">
-              <img src="/logo.png" alt="ListenUp Logo" className="h-6 w-auto object-contain drop-shadow" />
+            <div className="w-9 h-9 rounded-xl bg-[#D5F36A]/10 border border-[#D5F36A]/30 flex items-center justify-center gap-0.5 p-1.5 shadow-lg shadow-[#D5F36A]/5">
+              <span className="w-1 h-3.5 bg-[#D5F36A] rounded-full animate-pulse" />
+              <span className="w-1 h-5 bg-[#D5F36A] rounded-full" />
+              <span className="w-1 h-4 bg-[#D5F36A] rounded-full animate-pulse" />
+              <span className="w-1 h-2.5 bg-[#D5F36A] rounded-full" />
             </div>
             <div>
-              <h1 className="font-display text-xl font-extrabold text-[#F5F5F7] tracking-tight flex items-center gap-1">
-                Listen<span className="text-[#D5F36A]">Up</span>
+              <h1 className="font-display text-lg font-extrabold text-white tracking-tight flex items-center">
+                Listen <span className="text-[#D5F36A] ml-1">Up</span>
               </h1>
-              <div className="flex items-center gap-1.5 mt-0.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-[#D5F36A] animate-pulse"></span>
-                <p className="text-[10px] text-[#9999A6] uppercase tracking-widest font-semibold font-mono">Studio v2.4</p>
-              </div>
+              <p className="text-[11px] text-[#9999A6] font-medium leading-none mt-0.5">Music for every mood</p>
             </div>
           </div>
           {/* Mobile close toggle */}
@@ -1983,14 +2056,14 @@ export default function App() {
         </div>
 
         {/* Navigation Tabs */}
-        <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto custom-scrollbar">
+        <nav className="p-3 space-y-1">
           {[
             {
               id: 'home',
               label: 'Discover',
               icon: (
                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-5 h-5">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12l8.954-8.955c.44-.439 1.152-.439 1.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 21h8.25" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 21a9.004 9.004 0 008.716-6.747M12 21a9.004 9.004 0 01-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 017.843 4.582M12 3a8.997 8.997 0 00-7.843 4.582m15.686 0A11.953 11.953 0 0112 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0121 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0112 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 013 12c0-1.605.42-3.113 1.157-4.418" />
                 </svg>
               ),
               badge: null
@@ -2055,9 +2128,9 @@ export default function App() {
                   if (tab.id === 'playlists') setActivePlaylistId(null);
                   setIsMobileMenuOpen(false);
                 }}
-                className={`w-full flex items-center justify-between px-3.5 py-3 rounded-xl transition-all duration-200 group text-left cursor-pointer ${
+                className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl transition-all duration-200 group text-left cursor-pointer ${
                   isActive
-                    ? 'bg-[#D5F36A]/10 text-[#D5F36A] border border-[#D5F36A]/30 font-bold'
+                    ? 'border border-[#D5F36A]/50 bg-[#D5F36A]/10 text-[#D5F36A] font-semibold shadow-[0_0_15px_rgba(213,243,106,0.12)]'
                     : 'text-[#9999A6] hover:text-white hover:bg-white/[0.04]'
                 }`}
               >
@@ -2065,7 +2138,7 @@ export default function App() {
                   <span className={`${isActive ? 'text-[#D5F36A]' : 'text-[#9999A6] group-hover:text-slate-200'} transition-colors`}>
                     {tab.icon}
                   </span>
-                  <span className="text-sm font-medium">{tab.label}</span>
+                  <span className="text-sm">{tab.label}</span>
                 </div>
                 {tab.badge && (
                   <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
@@ -2083,7 +2156,98 @@ export default function App() {
           })}
         </nav>
 
-        {/* Sidebar Bottom Creator Card */}
+        {/* Your Playlists Section matching reference */}
+        <div className="px-4 pt-4 pb-2 border-t border-white/[0.06] flex-1 overflow-y-auto custom-scrollbar flex flex-col">
+          <div className="flex items-center justify-between px-2 mb-2">
+            <span className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">Your Playlists</span>
+            <button
+              onClick={openCreatePlaylistModal}
+              className="w-6 h-6 rounded-lg bg-white/[0.06] hover:bg-[#D5F36A] hover:text-black text-zinc-300 flex items-center justify-center transition-all cursor-pointer"
+              title="Create new playlist"
+              aria-label="Create new playlist"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor" className="w-3.5 h-3.5">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+              </svg>
+            </button>
+          </div>
+
+          <div className="space-y-1">
+            {/* Liked Songs Entry */}
+            <button
+              onClick={() => {
+                setActiveTab('favorites');
+                setIsMobileMenuOpen(false);
+              }}
+              className={`w-full flex items-center gap-3 p-2 rounded-xl transition-all text-left group cursor-pointer ${
+                activeTab === 'favorites' ? 'bg-white/[0.08]' : 'hover:bg-white/[0.04]'
+              }`}
+            >
+              <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 flex items-center justify-center flex-shrink-0 shadow-sm">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="white" className="w-4 h-4">
+                  <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
+                </svg>
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-semibold text-white truncate group-hover:text-[#D5F36A] transition-colors">Liked Songs</p>
+                <p className="text-[10px] text-[#9999A6] truncate">{favorites.length} {favorites.length === 1 ? 'song' : 'songs'}</p>
+              </div>
+            </button>
+
+            {/* Custom Playlists */}
+            {playlists.length > 0 ? (
+              (showAllPlaylists ? playlists : playlists.slice(0, 4)).map((pl) => (
+                <button
+                  key={pl.id}
+                  onClick={() => {
+                    setActiveTab('playlists');
+                    setActivePlaylistId(pl.id);
+                    setIsMobileMenuOpen(false);
+                  }}
+                  className={`w-full flex items-center gap-3 p-2 rounded-xl transition-all text-left group cursor-pointer ${
+                    activeTab === 'playlists' && activePlaylistId === pl.id ? 'bg-white/[0.08]' : 'hover:bg-white/[0.04]'
+                  }`}
+                >
+                  <div className="w-9 h-9 rounded-xl bg-[#191922] border border-white/[0.08] flex items-center justify-center flex-shrink-0 text-zinc-400 group-hover:text-[#D5F36A] overflow-hidden">
+                    {pl.songs?.[0]?.thumbnailUrl ? (
+                      <img src={pl.songs[0].thumbnailUrl} alt={pl.name} className="w-full h-full object-cover" />
+                    ) : (
+                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-4 h-4">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
+                      </svg>
+                    )}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-semibold text-white truncate group-hover:text-[#D5F36A] transition-colors">{pl.name}</p>
+                    <p className="text-[10px] text-[#9999A6] truncate">{pl.songs?.length || 0} {pl.songs?.length === 1 ? 'song' : 'songs'}</p>
+                  </div>
+                </button>
+              ))
+            ) : (
+              <div className="px-3 py-3 rounded-xl bg-white/[0.02] border border-dashed border-white/10 text-center">
+                <p className="text-[11px] text-[#9999A6]">No playlists yet.</p>
+                <button
+                  onClick={openCreatePlaylistModal}
+                  className="mt-1 text-[11px] font-bold text-[#D5F36A] hover:underline cursor-pointer"
+                >
+                  + Create Playlist
+                </button>
+              </div>
+            )}
+
+            {/* Show more ∨ */}
+            {playlists.length > 4 && (
+              <button
+                onClick={() => setShowAllPlaylists(!showAllPlaylists)}
+                className="w-full text-left px-2 py-1.5 text-xs text-[#9999A6] hover:text-white flex items-center gap-1 transition-colors cursor-pointer mt-1"
+              >
+                <span>{showAllPlaylists ? 'Show less ∧' : 'Show more ∨'}</span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Sidebar Bottom Account Card */}
         <div className="p-4 border-t border-white/[0.06] flex flex-col gap-3 mt-auto">
           {/* Hidden YouTube Container */}
           <div className="absolute top-[-9999px] left-[-9999px] opacity-0 pointer-events-none w-[1px] h-[1px] overflow-hidden">
@@ -2092,45 +2256,42 @@ export default function App() {
           </div>
           
           <div className="p-3 rounded-2xl bg-white/[0.02] border border-white/[0.06] flex items-center justify-between">
-            <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-full bg-[#191922] border border-white/[0.08] text-[#D5F36A] flex items-center justify-center text-xs font-bold shadow">
-                PJ
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="w-8 h-8 rounded-full bg-[#191922] border border-white/[0.08] text-[#D5F36A] flex items-center justify-center text-xs font-bold shadow flex-shrink-0">
+                {user ? (profile?.display_name?.[0]?.toUpperCase() || 'U') : 'LU'}
               </div>
-              <div className="min-w-0">
-                <p className="text-xs font-semibold text-white truncate">Prateek Jaiswal</p>
-                <p className="text-[10px] text-[#9999A6] truncate">Lead Developer</p>
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-semibold text-white truncate">{user ? (profile?.display_name || user.email?.split('@')[0]) : 'ListenUp'}</p>
+                <p className="text-[10px] text-[#9999A6] truncate">{user ? user.email : 'Music for every mood'}</p>
               </div>
             </div>
-            <div className="flex items-center gap-1.5">
-              <a 
-                href="https://github.com/prateek977" 
-                target="_blank" 
-                rel="noopener noreferrer" 
-                className="p-1.5 rounded-lg text-[#9999A6] hover:text-white hover:bg-white/[0.08] transition-colors"
-                title="GitHub"
+            {user ? (
+              <button
+                onClick={handleOpenProfileModal}
+                className="p-1.5 rounded-lg text-[#9999A6] hover:text-[#D5F36A] hover:bg-white/[0.08] transition-colors cursor-pointer"
+                title="Account Settings"
               >
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4">
-                  <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+                  <path fillRule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" />
                 </svg>
-              </a>
-              <a 
-                href="https://www.linkedin.com/in/prateek-jaiswal-44b580377/" 
-                target="_blank" 
-                rel="noopener noreferrer" 
-                className="p-1.5 rounded-lg text-[#9999A6] hover:text-[#D5F36A] hover:bg-white/[0.08] transition-colors"
-                title="LinkedIn"
+              </button>
+            ) : (
+              <button
+                onClick={() => {
+                  setAuthModalMode('signin');
+                  setIsAuthModalOpen(true);
+                }}
+                className="text-[10px] font-bold text-[#D5F36A] hover:underline cursor-pointer"
               >
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4">
-                  <path d="M19 0h-14c-2.761 0-5 2.239-5 5v14c0 2.761 2.239 5 5 5h14c2.762 0 5-2.239 5-5v-14c0-2.761-2.238-5-5-5zm-11 19h-3v-11h3v11zm-1.5-12.268c-.966 0-1.75-.79-1.75-1.764s.784-1.764 1.75-1.764 1.75.79 1.75 1.764-.783 1.764-1.75 1.764zm13.5 12.268h-3v-5.604c0-3.368-4-3.113-4 0v5.604h-3v-11h3v1.765c1.396-2.586 7-2.777 7 2.476v6.759z"/>
-                </svg>
-              </a>
-            </div>
+                Sign In
+              </button>
+            )}
           </div>
         </div>
       </aside>
 
       {/* Main Dashboard Panels */}
-      <main ref={mainContentRef} className="flex-1 flex flex-col h-full overflow-y-auto pb-8 px-4 md:px-8 py-4 md:py-6 z-10">
+      <main ref={mainContentRef} className="flex-1 flex flex-col h-full overflow-y-auto pb-32 px-4 md:px-8 py-4 md:py-6 z-10">
 
         {/* SEO Visually Hidden Content */}
         <section className="sr-only">
@@ -2188,52 +2349,78 @@ export default function App() {
           <>
             {/* Active View: HOME */}
             {activeTab === 'home' && (
-          <div className="flex flex-col gap-6 md:gap-8 max-w-5xl mx-auto w-full pb-6">
+          <div className="flex flex-col gap-7 md:gap-9 max-w-7xl mx-auto w-full pb-8">
             
-            {/* Top Bar matching reference: 2x2 grid icon, Greeting & Name, Notification, Avatar */}
-            <div className="flex items-center justify-between pt-1 pb-1">
-              <div className="flex items-center gap-3.5">
-                {/* 2x2 Grid Icon Button */}
-                <button
-                  onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-                  className="w-10 h-10 rounded-2xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] flex items-center justify-center text-[#9999A6] hover:text-white transition-all active:scale-95 flex-shrink-0 cursor-pointer"
-                  aria-label="Toggle navigation menu"
-                  title="Toggle Navigation Menu"
-                >
-                  <div className="grid grid-cols-2 gap-1 w-4 h-4">
-                    <span className="w-1.5 h-1.5 rounded-sm bg-slate-300"></span>
-                    <span className="w-1.5 h-1.5 rounded-sm bg-slate-300"></span>
-                    <span className="w-1.5 h-1.5 rounded-sm bg-slate-300"></span>
-                    <span className="w-1.5 h-1.5 rounded-sm bg-[#D5F36A]"></span>
-                  </div>
-                </button>
-
-                {/* Greeting and User Name */}
-                <div>
-                  <p className="text-[11px] md:text-xs font-medium text-[#9999A6] tracking-wide">
-                    {getGreeting()}
-                  </p>
-                  <h2 className="font-heading text-lg md:text-2xl font-extrabold text-[#F5F5F7] tracking-tight flex items-center">
-                    {user ? (profile?.display_name || user?.user_metadata?.full_name || user?.email?.split('@')[0] || 'Listener') : (displayName ? displayName.replace(/^Listener-/, '') : 'Guest')}
-                    <span className="text-[#D5F36A] text-xl font-bold ml-0.5">.</span>
-                  </h2>
+            {/* Top Navigation Bar: Search, Category Pills, Notifications & Profile */}
+            <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 pt-1 pb-1">
+              {/* Left: Search input field */}
+              <div className="relative flex-1 max-w-md">
+                <div className="relative flex items-center">
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor" className="w-4 h-4 text-zinc-400 absolute left-4 pointer-events-none">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+                  </svg>
+                  <input
+                    type="text"
+                    placeholder="Search for songs, artists, albums, playlists..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        if (searchQuery.trim()) {
+                          setActiveTab('search');
+                          handleSearchSubmit(e);
+                        }
+                      }
+                    }}
+                    className="w-full bg-[#15151E] hover:bg-[#1A1A24] focus:bg-[#181822] border border-white/[0.08] focus:border-[#D5F36A]/60 pl-11 pr-4 py-2.5 rounded-full text-xs sm:text-sm text-white placeholder-zinc-400 focus:outline-none transition-all shadow-inner"
+                  />
                 </div>
               </div>
 
-              {/* Right Controls: Notification Bell + Auth / Avatar */}
-              <div className="flex items-center gap-3">
+              {/* Center: Content category navigation pills (Active real categories) */}
+              <div className="flex items-center gap-1 bg-[#12121A] p-1 rounded-full border border-white/[0.06] self-center">
+                {[
+                  { id: 'music', label: 'Music' },
+                  { id: 'live', label: '((•)) Live' }
+                ].map(pill => {
+                  const isActive = activeCategoryFilter === pill.id;
+                  return (
+                    <button
+                      key={pill.id}
+                      onClick={() => {
+                        setActiveCategoryFilter(pill.id);
+                        if (pill.id === 'music') {
+                          setActiveTab('home');
+                        } else if (pill.id === 'live') {
+                          setActiveTab('rooms');
+                        }
+                      }}
+                      className={`px-4 py-1.5 rounded-full text-xs transition-all cursor-pointer ${
+                        isActive
+                          ? 'bg-[#D5F36A] text-black shadow-sm font-bold'
+                          : 'text-zinc-400 hover:text-white hover:bg-white/[0.04] font-medium'
+                      }`}
+                    >
+                      {pill.label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Right: Notifications & Profile Pill */}
+              <div className="flex items-center justify-end gap-3 self-end md:self-auto">
                 {/* Notification Bell */}
                 <div className="relative">
                   <button
                     onClick={() => setIsNotificationOpen(!isNotificationOpen)}
-                    className="w-10 h-10 rounded-full bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] flex items-center justify-center text-[#9999A6] hover:text-white transition-all active:scale-95 relative cursor-pointer"
+                    className="w-9 h-9 rounded-full bg-[#15151E] hover:bg-white/[0.08] border border-white/[0.08] flex items-center justify-center text-zinc-300 hover:text-white transition-all cursor-pointer relative"
                     aria-label="Notifications"
                   >
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-5 h-5">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-4 h-4">
                       <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
                     </svg>
-                    {/* Notification dot */}
-                    <span className="absolute top-2.5 right-2.5 w-2 h-2 rounded-full bg-[#D5F36A] ring-2 ring-[#08080D] animate-pulse"></span>
+                    <span className="absolute top-2 right-2 w-1.5 h-1.5 rounded-full bg-[#D5F36A] ring-1 ring-[#08080D]" />
                   </button>
 
                   {/* Notification Dropdown */}
@@ -2265,22 +2452,23 @@ export default function App() {
                   )}
                 </div>
 
-                {/* Authenticated Avatar / Guest Sign-in */}
+                {/* Avatar with Dynamic Greeting */}
                 {user ? (
                   <button
-                    onClick={() => setIsProfileModalOpen(true)}
-                    className="relative p-0.5 rounded-full ring-2 ring-[#D5F36A]/80 shadow-[0_0_12px_rgba(213,243,106,0.35)] active:scale-95 transition-all flex-shrink-0 cursor-pointer group"
-                    aria-label="User Profile and Preferences"
+                    onClick={handleOpenProfileModal}
+                    className="flex items-center gap-2 pl-1 pr-3.5 py-1 rounded-full bg-[#15151E] hover:bg-white/[0.08] border border-white/[0.08] transition-all cursor-pointer group"
                     title="Profile & Taste Preferences"
                   >
-                    <div className="w-9 h-9 rounded-full overflow-hidden bg-slate-800 flex items-center justify-center">
+                    <div className="w-7 h-7 rounded-full overflow-hidden bg-zinc-800 flex items-center justify-center border border-white/10 flex-shrink-0">
                       <img
                         src={profile?.avatar_url || `https://api.dicebear.com/7.x/bottts/svg?seed=${user.id}`}
                         alt="Avatar"
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                        className="w-full h-full object-cover"
                       />
                     </div>
-                    <span className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-[#D5F36A] rounded-full border-2 border-[#08080D]" />
+                    <span className="text-xs font-semibold text-zinc-200 group-hover:text-white transition-colors">
+                      Hi, {profile?.display_name || user?.user_metadata?.full_name || user?.email?.split('@')[0] || 'Listener'}
+                    </span>
                   </button>
                 ) : (
                   <button
@@ -2288,9 +2476,10 @@ export default function App() {
                       setAuthModalMode('signin');
                       setIsAuthModalOpen(true);
                     }}
-                    className="px-3.5 py-1.5 rounded-xl bg-[#D5F36A] hover:bg-[#BDE84A] text-black font-extrabold text-xs shadow-md shadow-[#D5F36A]/20 active:scale-95 transition-all flex items-center gap-1.5 cursor-pointer flex-shrink-0"
+                    className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-[#D5F36A] hover:bg-[#BDE84A] text-black font-bold text-xs transition-all cursor-pointer shadow-md shadow-[#D5F36A]/20"
+                    title="Sign In to ListenUp"
                   >
-                    <svg xmlns="http://www.w3.org/2000/svg" className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5">
                       <path fillRule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clipRule="evenodd" />
                     </svg>
                     <span>Sign In</span>
@@ -2299,150 +2488,282 @@ export default function App() {
               </div>
             </div>
 
-            {/* Filter Category Pills & Search Button */}
-            <div className="flex items-center justify-between gap-2 overflow-x-auto hide-scrollbar pb-1">
-              <div className="flex items-center gap-2">
-                {[
-                  { id: 'music', label: 'Music' },
-                  { id: 'podcasts', label: 'Podcasts' },
-                  { id: 'audiobooks', label: 'Audiobooks' },
-                  { id: 'live', label: 'Live' }
-                ].map(tab => {
-                  const isActive = activeCategoryFilter === tab.id;
-                  return (
-                    <button
-                      key={tab.id}
-                      onClick={() => {
-                        setActiveCategoryFilter(tab.id);
-                        if (tab.id === 'music') {
-                          setActiveTab('home');
-                        } else if (tab.id === 'podcasts') {
-                          setActiveTab('search');
-                          handleQuickTagClick('top podcast full episodes');
-                        } else if (tab.id === 'audiobooks') {
-                          setActiveTab('search');
-                          handleQuickTagClick('audiobook full playlist');
-                        } else if (tab.id === 'live') {
-                          setActiveTab('rooms');
-                        }
-                      }}
-                      className={`px-5 py-2 rounded-2xl text-xs md:text-sm font-bold transition-all flex-shrink-0 cursor-pointer ${
-                        isActive
-                          ? 'bg-[#D5F36A] text-black shadow-md'
-                          : 'bg-[#191922] hover:bg-white/[0.08] text-[#9999A6] hover:text-white border border-white/[0.08]'
-                      }`}
-                    >
-                      {tab.label}
-                    </button>
-                  );
-                })}
-              </div>
-
-              {/* Search Button */}
-              <button
-                onClick={() => setActiveTab('search')}
-                className="w-10 h-10 rounded-2xl bg-[#191922] hover:bg-white/[0.08] border border-white/[0.08] flex items-center justify-center text-[#9999A6] hover:text-white transition-all active:scale-95 flex-shrink-0 ml-1 cursor-pointer"
-                aria-label="Search"
-                title="Search Music"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor" className="w-4 h-4">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
-                </svg>
-              </button>
-            </div>
-
-            {/* Dynamic Featured Hero Banner */}
+            {/* 2-Column Hero & "Today For You" Row matching reference layout */}
             {(() => {
-              const featuredSong = currentSong || (homeData.trending && homeData.trending.length > 0 ? homeData.trending[0] : null);
-              const heroTitle = featuredSong ? featuredSong.title : 'Bollywood & Global Hits';
-              const heroArtist = featuredSong ? (featuredSong.artist || 'Top Trending on ListenUp') : 'Stream millions of tracks in studio quality';
-              const heroImg = featuredSong?.thumbnailUrl || 'https://images.unsplash.com/photo-1516450360452-9312f5e86fc7?w=1200&auto=format&fit=crop&q=80';
-              const isHeroPlaying = isPlaying && currentSong?.id === featuredSong?.id;
+              const heroCandidates = [
+                ...(homeData.trending || []),
+                ...(homeData.bollywood || []),
+                ...(suggestedSongs || [])
+              ].filter(Boolean);
 
-              return (
-                <div ref={heroRef} className="space-y-3">
-                  <div className="relative rounded-3xl overflow-hidden border border-white/[0.08] shadow-2xl bg-[#101017]">
-                    {/* Dynamic Background Image with atmospheric overlays */}
-                    <div className="absolute inset-0 z-0">
-                      <img
-                        src={heroImg}
-                        alt={heroTitle}
-                        onError={(e) => {
-                          e.currentTarget.src = 'https://images.unsplash.com/photo-1516450360452-9312f5e86fc7?w=1200&auto=format&fit=crop&q=80';
-                        }}
-                        className="w-full h-full object-cover opacity-45 filter brightness-90 saturate-150 transform scale-105 hover:scale-110 transition-transform duration-1000 ease-out"
-                      />
-                      <div className="absolute inset-0 bg-gradient-to-t from-[#08080D] via-[#08080D]/60 to-transparent pointer-events-none" />
-                      <div className="absolute inset-0 bg-gradient-to-r from-[#08080D]/90 via-transparent to-black/40 pointer-events-none" />
+              if (homeLoading || heroCandidates.length === 0) {
+                return (
+                  <div ref={heroRef} className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch animate-pulse">
+                    {/* Hero Banner Skeleton */}
+                    <div className="col-span-12 lg:col-span-8 xl:col-span-9 relative rounded-3xl overflow-hidden bg-[#12121A] border border-white/[0.08] p-6 sm:p-8 min-h-[340px] md:min-h-[380px] flex flex-col justify-between">
+                      <div className="w-24 h-6 rounded-full bg-white/[0.06]" />
+                      <div className="space-y-3 pt-12 max-w-xl">
+                        <div className="h-10 w-3/4 rounded-xl bg-white/[0.08]" />
+                        <div className="h-4 w-1/2 rounded bg-white/[0.05]" />
+                        <div className="h-3 w-2/3 rounded bg-white/[0.03]" />
+                        <div className="flex items-center gap-3 pt-3">
+                          <div className="w-28 h-10 rounded-full bg-[#D5F36A]/30" />
+                          <div className="w-10 h-10 rounded-full bg-white/[0.06]" />
+                        </div>
+                      </div>
                     </div>
 
-                    {/* Content */}
-                    <div className="relative z-10 p-6 md:p-8 flex flex-col justify-between min-h-[210px] md:min-h-[250px]">
-                      {/* Top Trending / Now Playing Badge */}
-                      <div className="flex items-center gap-2">
-                        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-black/60 backdrop-blur-md border border-white/10 text-[11px] font-bold text-[#D5F36A] shadow-sm">
-                          <span className={`w-2 h-2 rounded-full ${isHeroPlaying ? 'bg-[#D5F36A] animate-ping' : 'bg-[#D5F36A] animate-pulse'}`}></span>
-                          {isHeroPlaying ? 'Now Playing' : '🔥 Featured Hit'}
-                        </span>
-                        {featuredSong?.viewCount && (
-                          <span className="hidden sm:inline-flex text-[10px] text-[#9999A6] font-mono bg-black/40 backdrop-blur px-2 py-0.5 rounded-full border border-white/5">
-                            {(featuredSong.viewCount / 1000000).toFixed(1)}M+ plays
-                          </span>
-                        )}
+                    {/* Today For You Skeleton */}
+                    <div className="col-span-12 lg:col-span-4 xl:col-span-3 bg-[#12121A]/90 border border-white/[0.08] rounded-3xl p-5 flex flex-col justify-between backdrop-blur-md">
+                      <div className="flex items-center justify-between pb-3 border-b border-white/[0.06]">
+                        <div className="h-5 w-28 rounded bg-white/[0.08]" />
+                        <div className="h-4 w-12 rounded bg-white/[0.05]" />
+                      </div>
+                      <div className="space-y-3 py-3 flex-1 flex flex-col justify-around">
+                        {[1, 2, 3, 4].map((i) => (
+                          <div key={i} className="flex items-center justify-between gap-3 p-2 rounded-2xl bg-white/[0.02]">
+                            <div className="flex items-center gap-3 min-w-0 flex-1">
+                              <div className="w-11 h-11 rounded-xl bg-white/[0.06] flex-shrink-0" />
+                              <div className="space-y-1.5 flex-1">
+                                <div className="h-3.5 w-3/4 rounded bg-white/[0.08]" />
+                                <div className="h-2.5 w-1/2 rounded bg-white/[0.04]" />
+                              </div>
+                            </div>
+                            <div className="w-7 h-7 rounded-full bg-white/[0.06] flex-shrink-0" />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+
+              const heroTracks = heroCandidates.slice(0, 5);
+              const activeHeroSong = heroTracks[heroIndex % heroTracks.length] || heroTracks[0];
+              const isHeroPlaying = isPlaying && currentSong?.id === activeHeroSong?.id;
+
+              // Today For You tracks (4 tracks from live API)
+              const todayForYouTracks = homeData.trending?.length >= 5 
+                ? homeData.trending.slice(1, 5) 
+                : heroCandidates.slice(1, 5);
+
+              return (
+                <div ref={heroRef} className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
+                  {/* Left Widescreen Hero Feature Banner (9 Cols) */}
+                  <div className="col-span-12 lg:col-span-8 xl:col-span-9 relative rounded-3xl overflow-hidden bg-[#12121A] border border-white/[0.08] shadow-2xl flex flex-col justify-between p-6 sm:p-8 min-h-[340px] md:min-h-[380px]">
+                    {/* Background Artwork with Cinematic Overlays */}
+                    <div className="absolute inset-0 z-0">
+                      <img
+                        src={activeHeroSong.thumbnailUrl || '/artwork/default-cover.jpg'}
+                        alt={activeHeroSong.title}
+                        onError={(e) => {
+                          e.currentTarget.style.display = 'none';
+                        }}
+                        className="w-full h-full object-cover opacity-60 filter brightness-95 saturate-125 transform scale-105 hover:scale-110 transition-transform duration-1000 ease-out"
+                      />
+                      <div className="absolute inset-0 bg-gradient-to-t from-[#0B0B0F] via-[#0B0B0F]/60 to-transparent pointer-events-none" />
+                      <div className="absolute inset-0 bg-gradient-to-r from-[#0B0B0F]/90 via-[#0B0B0F]/40 to-transparent pointer-events-none" />
+                    </div>
+
+                    {/* Top Badge: NEW RELEASE */}
+                    <div className="relative z-10 flex items-center justify-between">
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-black/60 backdrop-blur-md border border-white/10 text-[10px] sm:text-[11px] font-bold text-white uppercase tracking-wider shadow-sm">
+                        NEW RELEASE
+                      </span>
+                    </div>
+
+                    {/* Bottom: Typography, Play Now Button, Dots & Navigation */}
+                    <div className="relative z-10 flex flex-col sm:flex-row sm:items-end justify-between gap-6 pt-12">
+                      <div className="space-y-2 max-w-xl">
+                        <h2 className="font-heading text-3xl sm:text-4xl md:text-5xl font-black text-white tracking-tight leading-none drop-shadow-md">
+                          {activeHeroSong.title}
+                        </h2>
+                        <p className="text-sm sm:text-base text-zinc-300 font-medium drop-shadow">
+                          {activeHeroSong.artist || 'Trending Music'}
+                        </p>
+                        <p className="text-xs sm:text-sm text-zinc-400 font-normal leading-relaxed drop-shadow line-clamp-2">
+                          {activeHeroSong.tagline || (activeHeroSong.duration ? `${Math.floor(activeHeroSong.duration / 60)}:${String(activeHeroSong.duration % 60).padStart(2, '0')} • High Definition Stereo Stream` : 'Featured release from your daily discovery stream.')}
+                        </p>
+
+                        {/* Actions: Play Now + Heart button */}
+                        <div className="flex items-center gap-3 pt-2">
+                          <button
+                            onClick={() => {
+                              if (currentSong && currentSong.id === activeHeroSong.id) {
+                                setIsPlaying(!isPlaying);
+                              } else {
+                                playSongFromList(activeHeroSong, heroTracks);
+                              }
+                            }}
+                            className="px-6 py-2.5 rounded-full bg-[#D5F36A] hover:bg-[#BDE84A] text-black font-extrabold text-xs sm:text-sm shadow-lg shadow-[#D5F36A]/25 active:scale-95 transition-all flex items-center gap-2 cursor-pointer"
+                          >
+                            {isHeroPlaying ? (
+                              <>
+                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4">
+                                  <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
+                                </svg>
+                                <span>Pause</span>
+                              </>
+                            ) : (
+                              <>
+                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4">
+                                  <path d="M8 5v14l11-7z" />
+                                </svg>
+                                <span>Play Now</span>
+                              </>
+                            )}
+                          </button>
+
+                          <button
+                            onClick={() => toggleFavorite(activeHeroSong)}
+                            className={`w-10 h-10 rounded-full border border-white/10 backdrop-blur-md flex items-center justify-center transition-all cursor-pointer ${
+                              favorites.some(s => s.id === activeHeroSong.id)
+                                ? 'bg-[#D5F36A]/20 text-[#D5F36A] border-[#D5F36A]/40'
+                                : 'bg-black/40 text-white hover:bg-black/60'
+                            }`}
+                            title="Add to Favorites"
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" fill={favorites.some(s => s.id === activeHeroSong.id) ? 'currentColor' : 'none'} viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-4 h-4">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12z" />
+                            </svg>
+                          </button>
+                        </div>
                       </div>
 
-                      {/* Bottom: Title, Subtitle, and Floating Play Button */}
-                      <div className="flex items-end justify-between gap-4 mt-6">
-                        <div className="space-y-1.5 max-w-lg">
-                          <h3 className="font-heading text-xl sm:text-2xl md:text-3xl font-extrabold text-[#F5F5F7] tracking-tight leading-tight drop-shadow-md line-clamp-2">
-                            {heroTitle}
-                          </h3>
-                          <p className="text-xs sm:text-sm text-[#9999A6] font-medium leading-relaxed drop-shadow truncate">
-                            {heroArtist}
-                          </p>
+                      {/* Carousel Navigation Controls (Dots + Arrows) */}
+                      <div className="flex items-center gap-3 self-end sm:self-auto">
+                        {/* Dots */}
+                        <div className="flex items-center gap-1.5">
+                          {heroTracks.map((_, idx) => (
+                            <button
+                              key={idx}
+                              onClick={() => setHeroIndex(idx)}
+                              className={`h-1.5 transition-all rounded-full cursor-pointer ${
+                                idx === heroIndex % heroTracks.length
+                                  ? 'w-6 bg-[#D5F36A] shadow-[0_0_8px_rgba(213,243,106,0.6)]'
+                                  : 'w-1.5 bg-white/30 hover:bg-white/60'
+                              }`}
+                            />
+                          ))}
                         </div>
 
-                        {/* Floating Lime Circular Play Button */}
-                        <button
-                          onClick={() => {
-                            if (currentSong && featuredSong && currentSong.id === featuredSong.id) {
-                              setIsPlaying(!isPlaying);
-                            } else if (featuredSong) {
-                              playSongFromList(featuredSong, homeData.trending.length > 0 ? homeData.trending : [featuredSong]);
-                            } else {
-                              playFeaturedMix();
-                            }
-                          }}
-                          className="w-13 h-13 md:w-14 md:h-14 rounded-full bg-[#D5F36A] hover:bg-[#BDE84A] text-black flex items-center justify-center shadow-[0_0_24px_rgba(213,243,106,0.4)] active:scale-90 transition-all flex-shrink-0 group cursor-pointer"
-                          aria-label={isHeroPlaying ? "Pause Track" : "Play Track"}
-                          title={isHeroPlaying ? "Pause Track" : "Play Track"}
-                        >
-                          {isHeroPlaying ? (
-                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6">
-                              <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
+                        {/* Arrows */}
+                        <div className="flex items-center gap-1.5 pl-2">
+                          <button
+                            onClick={() => setHeroIndex((prev) => (prev > 0 ? prev - 1 : heroTracks.length - 1))}
+                            className="w-7 h-7 rounded-full bg-black/60 hover:bg-black/90 border border-white/10 text-zinc-300 hover:text-white flex items-center justify-center transition-all cursor-pointer"
+                            aria-label="Previous featured track"
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor" className="w-3.5 h-3.5">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
                             </svg>
-                          ) : (
-                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6 translate-x-0.5 group-hover:scale-110 transition-transform">
-                              <path d="M8 5v14l11-7z" />
+                          </button>
+                          <button
+                            onClick={() => setHeroIndex((prev) => (prev + 1) % heroTracks.length)}
+                            className="w-7 h-7 rounded-full bg-black/60 hover:bg-black/90 border border-white/10 text-zinc-300 hover:text-white flex items-center justify-center transition-all cursor-pointer"
+                            aria-label="Next featured track"
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor" className="w-3.5 h-3.5">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
                             </svg>
-                          )}
-                        </button>
+                          </button>
+                        </div>
                       </div>
                     </div>
                   </div>
 
-                  {/* Carousel Pagination Dots */}
-                  <div className="flex items-center justify-center gap-1.5">
-                    <span className="w-5 h-1.5 rounded-full bg-[#D5F36A] shadow-[0_0_8px_rgba(213,243,106,0.6)]"></span>
-                    <span className="w-1.5 h-1.5 rounded-full bg-white/20"></span>
-                    <span className="w-1.5 h-1.5 rounded-full bg-white/20"></span>
-                    <span className="w-1.5 h-1.5 rounded-full bg-white/20"></span>
+                  {/* Right "Today For You" Sidebar Panel (3 Cols) */}
+                  <div className="col-span-12 lg:col-span-4 xl:col-span-3 bg-[#12121A]/90 border border-white/[0.08] rounded-3xl p-5 flex flex-col justify-between backdrop-blur-md shadow-xl">
+                    <div className="flex items-center justify-between pb-3 border-b border-white/[0.06]">
+                      <h3 className="font-heading text-base sm:text-lg font-bold text-white tracking-tight">Today For You</h3>
+                      <button
+                        onClick={() => setActiveTab('search')}
+                        className="text-xs font-semibold text-[#9999A6] hover:text-[#D5F36A] flex items-center gap-1 transition-colors cursor-pointer"
+                      >
+                        <span>See All</span>
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor" className="w-3 h-3">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+                        </svg>
+                      </button>
+                    </div>
+
+                    {/* 4 Tracks List matching reference */}
+                    <div className="space-y-2 py-3 flex-1 flex flex-col justify-around">
+                      {todayForYouTracks.map((trk) => {
+                        const isTrackCurrent = currentSong?.id === trk.id;
+                        return (
+                          <div
+                            key={trk.id}
+                            onClick={() => playSongFromList(trk, todayForYouTracks)}
+                            className="flex items-center justify-between gap-3 p-2 rounded-2xl hover:bg-white/[0.04] transition-all group cursor-pointer"
+                          >
+                            <div className="flex items-center gap-3 min-w-0 flex-1">
+                              <div className="w-11 h-11 rounded-xl overflow-hidden bg-black/40 border border-white/[0.08] flex-shrink-0 relative">
+                                <img 
+                                  src={trk.thumbnailUrl || '/artwork/default-cover.jpg'} 
+                                  alt={trk.title} 
+                                  onError={(e) => {
+                                    e.currentTarget.style.display = 'none';
+                                  }}
+                                  className="w-full h-full object-cover group-hover:scale-105 transition-transform" 
+                                />
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <p className="text-xs sm:text-sm font-semibold text-white truncate group-hover:text-[#D5F36A] transition-colors">
+                                  {trk.title}
+                                </p>
+                                <p className="text-[11px] text-[#9999A6] truncate mt-0.5">
+                                  {trk.artist}
+                                </p>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-1.5 flex-shrink-0">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  playSongFromList(trk, todayForYouTracks);
+                                }}
+                                className={`w-7 h-7 rounded-full flex items-center justify-center transition-all shadow ${
+                                  isTrackCurrent && isPlaying
+                                    ? 'bg-[#D5F36A] text-black shadow-[0_0_10px_rgba(213,243,106,0.4)]'
+                                    : 'bg-black/60 group-hover:bg-[#D5F36A] group-hover:text-black text-white'
+                                }`}
+                              >
+                                {isTrackCurrent && isPlaying ? (
+                                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-3.5 h-3.5">
+                                    <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
+                                  </svg>
+                                ) : (
+                                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-3.5 h-3.5 translate-x-0.5">
+                                    <path d="M8 5v14l11-7z" />
+                                  </svg>
+                                )}
+                              </button>
+
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  const rect = e.currentTarget.getBoundingClientRect();
+                                  setActiveContextMenu({ song: trk, anchorRect: rect });
+                                }}
+                                className="p-1 rounded-lg text-zinc-500 hover:text-white hover:bg-white/[0.06] transition-colors"
+                              >
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor" className="w-4 h-4">
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.75a.75.75 0 110-1.5.75.75 0 010 1.5zM12 12.75a.75.75 0 110-1.5.75.75 0 010 1.5zM12 18.75a.75.75 0 110-1.5.75.75 0 010 1.5z" />
+                                </svg>
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
                 </div>
               );
             })()}
 
-            {/* Section 1: Dynamic Recently Played */}
+            {/* Section 1: Recently Played */}
             <section className="space-y-3.5">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2.5">
@@ -2466,8 +2787,8 @@ export default function App() {
                 </button>
               </div>
 
-              {/* Dynamic Song Cards */}
-              <div className="flex gap-3.5 overflow-x-auto hide-scrollbar pb-1">
+              {/* Landscape Song Cards Row */}
+              <div className="flex gap-4 overflow-x-auto hide-scrollbar pb-1">
                 {(() => {
                   const displaySongs = recentlyPlayed.length > 0 
                     ? recentlyPlayed 
@@ -2487,6 +2808,7 @@ export default function App() {
                     <SongCard
                       key={song.id}
                       song={song}
+                      variant="landscape"
                       isCurrent={currentSong?.id === song.id}
                       isPlaying={isPlaying}
                       onClick={() => playSongFromList(song, displaySongs)}
@@ -2498,7 +2820,7 @@ export default function App() {
               </div>
             </section>
 
-            {/* Section: Suggested Songs (Personalized for Client with Preferences) */}
+            {/* Section 2: Suggested Songs */}
             <section className="space-y-3.5">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2.5">
@@ -2541,7 +2863,7 @@ export default function App() {
                     className="px-3 py-1.5 rounded-xl bg-[#191922] hover:bg-white/[0.08] border border-white/[0.08] text-xs font-semibold text-[#9999A6] hover:text-[#D5F36A] transition-colors cursor-pointer"
                     title="Update your taste preferences"
                   >
-                    <span>Preferences</span>
+                    <span>See All</span>
                   </button>
                 </div>
               </div>
@@ -2575,13 +2897,13 @@ export default function App() {
               )}
 
               {/* Song Cards Carousel */}
-              <div className="flex gap-3.5 overflow-x-auto hide-scrollbar pb-1">
+              <div className="flex gap-4 overflow-x-auto hide-scrollbar pb-1">
                 {suggestedLoading && suggestedSongs.length === 0 ? (
                   [1, 2, 3, 4, 5].map(i => (
-                    <div key={i} className="w-36 sm:w-44 flex-shrink-0 space-y-2">
-                      <div className="skeleton-shimmer aspect-square w-full rounded-2xl"></div>
-                      <div className="skeleton-shimmer h-3.5 w-28 rounded"></div>
-                      <div className="skeleton-shimmer h-2.5 w-16 rounded"></div>
+                    <div key={i} className="w-52 sm:w-60 flex-shrink-0 space-y-2">
+                      <div className="skeleton-shimmer aspect-[16/10] w-full rounded-2xl"></div>
+                      <div className="skeleton-shimmer h-3.5 w-32 rounded"></div>
+                      <div className="skeleton-shimmer h-2.5 w-20 rounded"></div>
                     </div>
                   ))
                 ) : suggestedSongs.length === 0 ? (
@@ -2599,6 +2921,7 @@ export default function App() {
                     <SongCard
                       key={song.id}
                       song={song}
+                      variant="landscape"
                       isCurrent={currentSong?.id === song.id}
                       isPlaying={isPlaying}
                       onClick={() => playSongFromList(song, suggestedSongs)}
@@ -2610,7 +2933,7 @@ export default function App() {
               </div>
             </section>
 
-            {/* Section 2: Dynamic Made For You (Curated Mixes from Live Catalog) */}
+            {/* Section 3: Made For You (6 Curated Editorial Mixes matching reference) */}
             <section className="space-y-3.5">
               <div className="flex items-center justify-between">
                 <h3 className="font-heading text-lg md:text-xl font-bold text-white tracking-tight">
@@ -2620,68 +2943,60 @@ export default function App() {
                   onClick={() => setActiveTab('search')}
                   className="text-xs font-semibold text-[#9999A6] hover:text-[#D5F36A] flex items-center gap-1 transition-colors cursor-pointer"
                 >
-                  <span>Explore more</span>
+                  <span>See All</span>
                   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor" className="w-3 h-3">
                     <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
                   </svg>
                 </button>
               </div>
 
-              <div className="flex gap-3.5 overflow-x-auto hide-scrollbar pb-1">
+              <div className="flex gap-4 overflow-x-auto hide-scrollbar pb-1">
                 {[
                   {
-                    mixTitle: 'Sad Songs & Melodies',
-                    badge: 'Heartbreak & Soul',
-                    category: 'sad',
-                    song: homeData.sad?.[0],
-                    fallbackImg: 'https://images.unsplash.com/photo-1516589178581-6cd7833ae3b2?w=400&auto=format&fit=crop&q=80'
-                  },
-                  {
-                    mixTitle: 'Daily Bollywood Mix',
-                    badge: 'Your Mix',
-                    category: 'bollywood',
-                    song: homeData.bollywood?.[0],
-                    fallbackImg: 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=400&auto=format&fit=crop&q=80'
-                  },
-                  {
-                    mixTitle: 'Top Trending Hits',
-                    badge: 'Hot Right Now',
-                    category: 'trending',
-                    song: homeData.trending?.[0],
-                    fallbackImg: 'https://images.unsplash.com/photo-1492684223066-81342ee5ff30?w=400&auto=format&fit=crop&q=80'
-                  },
-                  {
-                    mixTitle: 'Lo-Fi Chill Sanctuary',
-                    badge: 'Deep Focus',
+                    mixTitle: 'Chill Mix',
+                    subtitle: 'Calm your mind',
                     category: 'lofi',
-                    song: homeData.lofi?.[0],
-                    fallbackImg: 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=400&auto=format&fit=crop&q=80'
+                    gradient: 'from-teal-950 via-[#0e2c2f] to-[#12121A]',
+                    song: homeData.lofi?.[0]
                   },
                   {
-                    mixTitle: 'High-Energy Party Mix',
-                    badge: 'Top Picks',
-                    category: 'party',
-                    song: homeData.party?.[0],
-                    fallbackImg: 'https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=400&auto=format&fit=crop&q=80'
-                  },
-                  {
-                    mixTitle: 'Romantic Melodies',
-                    badge: 'Heartstrings',
+                    mixTitle: 'Love Mix',
+                    subtitle: 'For your heart',
                     category: 'romantic',
-                    song: homeData.romantic?.[0],
-                    fallbackImg: 'https://images.unsplash.com/photo-1518609878373-06d740f60d8b?w=400&auto=format&fit=crop&q=80'
+                    gradient: 'from-rose-950 via-[#2f0e1a] to-[#12121A]',
+                    song: homeData.romantic?.[0]
                   },
                   {
-                    mixTitle: 'Global Pop Chartbusters',
-                    badge: 'Worldwide',
+                    mixTitle: 'Focus Mix',
+                    subtitle: 'Stay productive',
+                    category: 'lofi',
+                    gradient: 'from-emerald-950 via-[#0e2f1b] to-[#12121A]',
+                    song: homeData.lofi?.[1]
+                  },
+                  {
+                    mixTitle: 'Workout Mix',
+                    subtitle: 'High energy',
+                    category: 'party',
+                    gradient: 'from-amber-950 via-[#2f1b0e] to-[#12121A]',
+                    song: homeData.party?.[0]
+                  },
+                  {
+                    mixTitle: 'Retro Mix',
+                    subtitle: 'Timeless hits',
+                    category: 'bollywood',
+                    gradient: 'from-indigo-950 via-[#181a38] to-[#12121A]',
+                    song: homeData.bollywood?.[0]
+                  },
+                  {
+                    mixTitle: 'Travel Mix',
+                    subtitle: 'On the go',
                     category: 'hollywood',
-                    song: homeData.hollywood?.[0],
-                    fallbackImg: 'https://images.unsplash.com/photo-1509198397868-475647b2a1e5?w=400&auto=format&fit=crop&q=80'
+                    gradient: 'from-purple-950 via-[#2b0e35] to-[#12121A]',
+                    song: homeData.hollywood?.[0]
                   }
                 ].map(card => {
                   const songList = homeData[card.category] || [];
-                  const previewImg = card.song?.thumbnailUrl || card.fallbackImg;
-                  const displayTitle = card.song ? card.song.title : card.mixTitle;
+                  const previewImg = card.song?.thumbnailUrl || null;
 
                   return (
                     <div
@@ -2693,42 +3008,28 @@ export default function App() {
                           handleQuickTagClick(card.mixTitle);
                         }
                       }}
-                      className="w-36 sm:w-44 flex-shrink-0 group cursor-pointer"
+                      className="w-52 sm:w-60 flex-shrink-0 group cursor-pointer select-none"
                     >
-                      <div className="relative aspect-square w-full rounded-2xl overflow-hidden bg-[#101017] border border-white/[0.08] shadow-lg group-hover:border-[#D5F36A]/50 transition-all">
-                        <img
-                          src={previewImg}
-                          alt={card.mixTitle}
-                          loading="lazy"
-                          onError={(e) => {
-                            e.currentTarget.src = card.fallbackImg;
-                          }}
-                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500 ease-out"
-                        />
-                        <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/30 to-transparent pointer-events-none" />
-                        
-                        {/* Mix Badge */}
-                        <span className="absolute top-2 left-2 text-[10px] font-bold bg-black/70 backdrop-blur-md text-[#D5F36A] border border-[#D5F36A]/30 px-2 py-0.5 rounded-full pointer-events-none">
-                          {card.badge}
-                        </span>
+                      <div className={`relative aspect-[16/10] w-full rounded-2xl overflow-hidden bg-[#12121A] bg-gradient-to-br ${card.gradient} border border-white/[0.08] group-hover:border-[#D5F36A]/50 p-4 flex flex-col justify-between shadow-lg transition-all duration-300`}>
+                        {previewImg && (
+                          <img
+                            src={previewImg}
+                            alt={card.mixTitle}
+                            className="absolute inset-0 w-full h-full object-cover opacity-20 filter saturate-150 group-hover:scale-105 transition-transform duration-500 pointer-events-none"
+                          />
+                        )}
+                        <div className="relative z-10">
+                          <h4 className="font-heading text-base sm:text-lg font-bold text-white group-hover:text-[#D5F36A] transition-colors">{card.mixTitle}</h4>
+                          <p className="text-xs text-zinc-300 font-medium mt-0.5">{card.subtitle}</p>
+                        </div>
 
-                        {/* Play Hover Button */}
-                        <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                          <div className="w-10 h-10 rounded-full bg-[#D5F36A] text-black flex items-center justify-center shadow-lg shadow-[#D5F36A]/30 transform scale-75 group-hover:scale-100 transition-transform">
-                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5 translate-x-0.5">
+                        {/* Bottom Right Circular Play Button */}
+                        <div className="relative z-10 self-end">
+                          <div className="w-8 h-8 rounded-full bg-black/80 group-hover:bg-[#D5F36A] group-hover:text-black text-white flex items-center justify-center transition-all shadow-md group-hover:scale-110">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4 translate-x-0.5">
                               <path d="M8 5v14l11-7z" />
                             </svg>
                           </div>
-                        </div>
-
-                        {/* Text Overlay */}
-                        <div className="absolute bottom-2.5 left-2.5 right-2.5">
-                          <p className="text-xs font-bold text-white truncate drop-shadow" title={displayTitle}>
-                            {card.mixTitle}
-                          </p>
-                          <p className="text-[10px] text-[#9999A6] font-medium truncate mt-0.5" title={card.song?.title || card.badge}>
-                            {card.song ? card.song.title : `${songList.length} tracks`}
-                          </p>
                         </div>
                       </div>
                     </div>
@@ -2737,7 +3038,7 @@ export default function App() {
               </div>
             </section>
 
-            {/* Section 3: Popular Artists / From Your Favourite Artists */}
+            {/* Section 4: Popular Artists matching reference */}
             <section className="space-y-3.5">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2.5">
@@ -2761,7 +3062,7 @@ export default function App() {
                 </button>
               </div>
 
-              <div className="flex gap-4 overflow-x-auto hide-scrollbar pb-1">
+              <div className="flex gap-5 overflow-x-auto hide-scrollbar pb-1">
                 {displayedArtists.map(artist => (
                   <div
                     key={artist.name}
@@ -2771,7 +3072,7 @@ export default function App() {
                     }}
                     className="flex flex-col items-center gap-2 flex-shrink-0 group cursor-pointer relative"
                   >
-                    <div className={`w-18 h-18 sm:w-20 sm:h-20 rounded-full overflow-hidden p-0.5 border-2 transition-all bg-[#101017] flex items-center justify-center relative ${
+                    <div className={`w-20 h-20 sm:w-22 sm:h-22 rounded-full overflow-hidden p-0.5 border-2 transition-all bg-[#101017] flex items-center justify-center relative ${
                       artist.isUserFav 
                         ? 'border-[#D5F36A] shadow-[0_0_15px_rgba(213,243,106,0.35)]' 
                         : 'border-white/[0.08] group-hover:border-[#D5F36A] group-hover:shadow-[0_0_15px_rgba(213,243,106,0.3)]'
@@ -2795,8 +3096,8 @@ export default function App() {
                         {getArtistInitials(artist.name)}
                       </div>
                     </div>
-                    <span className={`text-[11px] sm:text-xs font-semibold truncate max-w-[85px] text-center transition-colors ${
-                      artist.isUserFav ? 'text-[#D5F36A] font-bold' : 'text-[#9999A6] group-hover:text-[#D5F36A]'
+                    <span className={`text-xs font-semibold truncate max-w-[85px] text-center transition-colors ${
+                      artist.isUserFav ? 'text-[#D5F36A] font-bold' : 'text-zinc-300 group-hover:text-[#D5F36A]'
                     }`} title={artist.name}>
                       {artist.name}
                     </span>
@@ -4037,26 +4338,31 @@ export default function App() {
       </main>
       </div>
 
-      {/* Master Bottom Media Control Bar & Floating Mini-Player */}
-      <footer className="w-full bg-transparent px-3 md:px-6 pb-2 pt-1 relative z-30 flex-shrink-0">
-        {/* Floating Pill Container matching reference */}
-        <div className="w-full max-w-5xl mx-auto rounded-2xl md:rounded-full bg-[#101017]/95 backdrop-blur-2xl border border-white/[0.08] shadow-[0_12px_40px_rgba(0,0,0,0.85)] p-2.5 md:px-5 md:py-3 flex items-center justify-between gap-3 transition-all hover:border-white/15">
+      {/* Master Bottom Media Control Bar - Full-Width Fixed Docked matching reference */}
+      <footer className="fixed bottom-16 md:bottom-0 left-0 right-0 z-40 bg-[#0B0B0F]/95 backdrop-blur-2xl border-t border-white/[0.08] px-4 md:px-8 py-2.5 transition-all">
+        <div className="w-full max-w-7xl mx-auto flex items-center justify-between gap-4">
           
-          {/* Left: Active Track Details or Default Preview */}
-          <div 
-            className="flex items-center gap-3 min-w-0 flex-1 md:flex-initial md:w-1/3 cursor-pointer group"
-            onClick={() => setIsNowPlayingOpen(true)}
-            title="Open Now Playing"
-            role="button"
-            tabIndex={0}
-            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setIsNowPlayingOpen(true); }}
-          >
-            <div ref={playerArtRef} className="w-11 h-11 md:w-12 md:h-12 rounded-xl overflow-hidden bg-black/60 border border-white/[0.08] shadow-md flex-shrink-0 relative">
-              <img 
-                src={currentSong ? currentSong.thumbnailUrl : (homeData.trending?.[0]?.thumbnailUrl || 'https://images.unsplash.com/photo-1516450360452-9312f5e86fc7?w=120&auto=format&fit=crop&q=80')} 
-                alt={currentSong ? currentSong.title : (homeData.trending?.[0]?.title || 'ListenUp Music')} 
-                className="w-full h-full object-cover group-hover:scale-105 transition-transform" 
-              />
+          {/* Left: Active Track Thumbnail & Metadata + Favorite & Add to Playlist */}
+          <div className="flex items-center gap-3 min-w-0 flex-1 md:flex-initial md:w-1/4">
+            <div 
+              ref={playerArtRef} 
+              onClick={() => setIsNowPlayingOpen(true)}
+              className="w-12 h-12 rounded-xl overflow-hidden bg-black/60 border border-white/[0.08] shadow-md flex-shrink-0 relative group cursor-pointer"
+              title="Open Now Playing Screen"
+            >
+              {currentSong?.thumbnailUrl ? (
+                <img 
+                  src={currentSong.thumbnailUrl} 
+                  alt={currentSong.title} 
+                  className="w-full h-full object-cover group-hover:scale-105 transition-transform" 
+                />
+              ) : (
+                <div className="w-full h-full bg-[#191922] flex items-center justify-center text-[#D5F36A]">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
+                    <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z" />
+                  </svg>
+                </div>
+              )}
               {isPlaying && (
                 <div className="absolute inset-0 bg-black/30 flex items-center justify-center pointer-events-none">
                   <span className="w-2 h-2 rounded-full bg-[#D5F36A] animate-ping"></span>
@@ -4064,114 +4370,172 @@ export default function App() {
               )}
             </div>
             <div ref={playerTitleRef} className="min-w-0 flex-1">
-              <h4 className="font-heading text-xs md:text-sm font-bold text-[#F5F5F7] truncate group-hover:text-[#D5F36A] transition-colors" title={currentSong ? currentSong.title : (homeData.trending?.[0]?.title || 'ListenUp Music')}>
-                {currentSong ? currentSong.title : (homeData.trending?.[0]?.title || 'ListenUp Music')}
+              <h4 
+                onClick={() => setIsNowPlayingOpen(true)}
+                className="font-heading text-xs md:text-sm font-bold text-white truncate hover:text-[#D5F36A] transition-colors cursor-pointer" 
+                title={currentSong ? currentSong.title : 'Ready to Play'}
+              >
+                {currentSong ? currentSong.title : 'Ready to Play'}
               </h4>
-              <p className="text-[10px] md:text-xs text-[#9999A6] truncate mt-0.5" title={currentSong ? currentSong.artist : (homeData.trending?.[0]?.artist || 'Ready to Stream')}>
-                {currentSong ? currentSong.artist : (homeData.trending?.[0]?.artist || 'Ready to Stream')}
+              <p className="text-[10px] md:text-xs text-[#9999A6] truncate mt-0.5" title={currentSong ? currentSong.artist : 'Select any song to begin listening'}>
+                {currentSong ? currentSong.artist : 'Select any song to begin listening'}
               </p>
+            </div>
+
+            {/* Quick Actions: Favorite Heart & Add to Playlist (+) */}
+            <div className="hidden sm:flex items-center gap-1 flex-shrink-0">
+              <button
+                onClick={() => {
+                  if (currentSong) toggleFavorite(currentSong);
+                  else playFeaturedMix();
+                }}
+                aria-label={currentSong && favorites.some(s => s.id === currentSong.id) ? "Remove from favorites" : "Add to favorites"}
+                className={`p-2 rounded-full hover:bg-white/[0.08] transition-colors cursor-pointer ${
+                  currentSong && favorites.some(s => s.id === currentSong.id) ? 'text-rose-500' : 'text-[#9999A6] hover:text-[#F5F5F7]'
+                }`}
+                title="Favorite"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" fill={currentSong && favorites.some(s => s.id === currentSong.id) ? 'currentColor' : 'none'} viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-4 h-4">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12z" />
+                </svg>
+              </button>
+
+              <button
+                onClick={() => {
+                  if (currentSong) handleOpenAddToPlaylist(currentSong);
+                  else playFeaturedMix();
+                }}
+                className="p-2 rounded-full hover:bg-white/[0.08] text-[#9999A6] hover:text-[#D5F36A] transition-colors cursor-pointer"
+                title="Add to Playlist"
+                aria-label="Add to Playlist"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor" className="w-4 h-4">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                </svg>
+              </button>
             </div>
           </div>
 
-          {/* Center: Playback Progress (Desktop) */}
-          <div className="hidden md:flex flex-1 items-center gap-3 max-w-sm px-2">
-            <span className="text-[10px] font-mono text-[#9999A6] w-8 text-right select-none">
-              {formatTime(currentTime)}
-            </span>
-            <input
-              type="range"
-              min="0"
-              max={duration || 100}
-              value={currentTime}
-              onChange={handleSeekChange}
-              disabled={!currentSong || !isPlayerReady}
-              className="flex-1 accent-[#D5F36A] h-1 rounded-full cursor-pointer disabled:opacity-30"
-            />
-            <span className="text-[10px] font-mono text-[#9999A6] w-8 select-none">
-              {formatTime(duration)}
-            </span>
+          {/* Center: Dual-Level Controls (Top: Buttons, Bottom: Progress Slider) */}
+          <div className="flex flex-col items-center flex-1 max-w-xl px-2">
+            {/* Top Row Controls: Shuffle, Prev, Lime Play/Pause, Next, Repeat */}
+            <div className="flex items-center gap-3 md:gap-4 mb-1">
+              <button
+                onClick={() => {
+                  if (queue.length > 1) {
+                    const shuffled = [...queue].sort(() => Math.random() - 0.5);
+                    setQueue(shuffled);
+                  }
+                }}
+                className="p-1.5 text-zinc-400 hover:text-white transition-colors cursor-pointer"
+                title="Shuffle"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-4 h-4">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 12c0-1.232-.046-2.453-.138-3.662a4.006 4.006 0 00-3.7-3.7 48.678 48.678 0 00-7.324 0 4.006 4.006 0 00-3.7 3.7c-.017.22-.032.441-.046.662M19.5 12l3-3m-3 3l-3-3m-12 3c0 1.232.046 2.453.138 3.662a4.006 4.006 0 003.7 3.7 48.656 48.656 0 007.324 0 4.006 4.006 0 003.7-3.7c.017-.22.032-.441.046-.662M4.5 12l3 3m-3-3l-3 3" />
+                </svg>
+              </button>
+
+              <button
+                onClick={playPrevious}
+                className="p-1.5 text-zinc-400 hover:text-white transition-colors cursor-pointer"
+                title="Previous Track"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4">
+                  <path d="M18 6l-8.5 6 8.5 6V6zM8 6v12H6V6h2z"/>
+                </svg>
+              </button>
+
+              <button
+                onClick={() => {
+                  if (!currentSong) {
+                    playFeaturedMix();
+                    return;
+                  }
+                  if (activeRoom && !isHost && socketRef.current) {
+                    socketRef.current.emit('request_playback', { isPlaying: !isPlaying, displayName });
+                    return;
+                  }
+                  setIsPlaying(!isPlaying);
+                }}
+                className="w-9 h-9 rounded-full bg-[#D5F36A] hover:bg-[#BDE84A] text-black flex items-center justify-center shadow-[0_0_16px_rgba(213,243,106,0.35)] active:scale-90 transition-all flex-shrink-0 cursor-pointer"
+                title={isPlaying ? 'Pause' : 'Play'}
+                aria-label={isPlaying ? 'Pause' : 'Play'}
+              >
+                {isBuffering ? (
+                  <div className="w-3.5 h-3.5 border-2 border-black/30 border-t-black rounded-full animate-spin"></div>
+                ) : isPlaying ? (
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4">
+                    <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
+                  </svg>
+                ) : (
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4 translate-x-0.5">
+                    <path d="M8 5v14l11-7z" />
+                  </svg>
+                )}
+              </button>
+
+              <button
+                onClick={playNext}
+                disabled={queue.length === 0}
+                className="p-1.5 text-zinc-400 hover:text-white transition-colors disabled:opacity-30 cursor-pointer"
+                title="Next Track"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4">
+                  <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/>
+                </svg>
+              </button>
+
+              <button
+                onClick={() => setAutoplayEnabled(!autoplayEnabled)}
+                className={`p-1.5 transition-colors cursor-pointer ${
+                  autoplayEnabled ? 'text-[#D5F36A]' : 'text-zinc-400 hover:text-white'
+                }`}
+                title={autoplayEnabled ? "Autoplay ON" : "Autoplay OFF"}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4">
+                  <path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/>
+                </svg>
+              </button>
+            </div>
+
+            {/* Bottom Row Progress Bar: Time, Range Slider, Duration */}
+            <div className="w-full flex items-center gap-2.5">
+              <span className="text-[10px] md:text-[11px] font-mono text-[#9999A6] w-8 text-right select-none">
+                {formatTime(currentTime)}
+              </span>
+              <input
+                type="range"
+                min="0"
+                max={duration || 100}
+                value={currentTime}
+                onChange={handleSeekChange}
+                disabled={!currentSong || !isPlayerReady}
+                className="flex-1 accent-[#D5F36A] h-1 bg-white/10 rounded-full cursor-pointer disabled:opacity-30"
+              />
+              <span className="text-[10px] md:text-[11px] font-mono text-[#9999A6] w-8 select-none">
+                {formatTime(duration)}
+              </span>
+            </div>
           </div>
 
-          {/* Right: Controls matching reference (Heart, Lime-Green Play/Pause, Next) + Volume */}
-          <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
-            {/* Heart / Favorite Button */}
+          {/* Right Controls: Lyrics, Queue, Volume, Fullscreen */}
+          <div className="flex items-center justify-end gap-2 sm:gap-3 flex-shrink-0 md:w-1/4">
+            {/* Lyrics Button */}
             <button
-              onClick={() => {
-                if (currentSong) toggleFavorite(currentSong);
-                else playFeaturedMix();
-              }}
-              aria-label={currentSong && favorites.some(s => s.id === currentSong.id) ? "Remove from favorites" : "Add to favorites"}
-              className={`p-2 rounded-full hover:bg-white/[0.08] transition-colors cursor-pointer ${
-                currentSong && favorites.some(s => s.id === currentSong.id) ? 'text-rose-500' : 'text-[#9999A6] hover:text-[#F5F5F7]'
-              }`}
+              onClick={() => setIsNowPlayingOpen(true)}
+              className="p-1.5 text-zinc-400 hover:text-white hover:bg-white/[0.06] rounded-lg transition-colors cursor-pointer"
+              title="Lyrics"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" fill={currentSong && favorites.some(s => s.id === currentSong.id) ? 'currentColor' : 'none'} viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-5 h-5">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12z" />
-              </svg>
-            </button>
-
-            {/* Play/Pause Button - Lime-Green Circle matching reference */}
-            <button
-              onClick={() => {
-                if (!currentSong) {
-                  playFeaturedMix();
-                  return;
-                }
-                if (activeRoom && !isHost && socketRef.current) {
-                  socketRef.current.emit('request_playback', { isPlaying: !isPlaying, displayName });
-                  return;
-                }
-                setIsPlaying(!isPlaying);
-              }}
-              className="w-10 h-10 md:w-11 md:h-11 rounded-full bg-[#D5F36A] hover:bg-[#BDE84A] text-black flex items-center justify-center shadow-[0_0_20px_rgba(213,243,106,0.35)] active:scale-90 transition-all flex-shrink-0 cursor-pointer"
-              title={isPlaying ? 'Pause' : 'Play'}
-              aria-label={isPlaying ? 'Pause' : 'Play'}
-            >
-              {isBuffering ? (
-                <div className="w-4 h-4 border-2 border-black/30 border-t-black rounded-full animate-spin"></div>
-              ) : isPlaying ? (
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
-                  <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
-                </svg>
-              ) : (
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5 translate-x-0.5">
-                  <path d="M8 5v14l11-7z" />
-                </svg>
-              )}
-            </button>
-
-            {/* Next Button */}
-            <button
-              onClick={playNext}
-              disabled={queue.length === 0}
-              className="p-2 text-[#9999A6] hover:text-[#F5F5F7] transition-colors disabled:opacity-30 disabled:pointer-events-none cursor-pointer"
-              title="Next Track"
-              aria-label="Next Track"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
-                <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/>
-              </svg>
-            </button>
-
-            {/* Autoplay Toggle Button */}
-            <button
-              onClick={() => setAutoplayEnabled(!autoplayEnabled)}
-              className={`p-2 rounded-full transition-colors cursor-pointer hidden sm:flex items-center justify-center ${
-                autoplayEnabled ? 'text-[#D5F36A] hover:bg-[#D5F36A]/10' : 'text-[#666674] hover:text-[#9999A6]'
-              }`}
-              title={autoplayEnabled ? "Autoplay ON (Similar tracks play when queue ends)" : "Autoplay OFF"}
-              aria-label={autoplayEnabled ? "Disable Autoplay" : "Enable Autoplay"}
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4">
-                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/>
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-4 h-4">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25H12" />
               </svg>
             </button>
 
             {/* Queue Toggle Button */}
             <button
               onClick={() => setIsQueuePanelOpen((prev) => !prev)}
-              className={`p-2 rounded-full transition-colors cursor-pointer hidden sm:flex items-center justify-center relative ${
-                isQueuePanelOpen ? 'text-[#D5F36A] bg-[#D5F36A]/10' : 'text-[#9999A6] hover:text-[#F5F5F7]'
+              className={`p-1.5 rounded-lg transition-colors cursor-pointer relative ${
+                isQueuePanelOpen ? 'text-[#D5F36A] bg-[#D5F36A]/10' : 'text-zinc-400 hover:text-white hover:bg-white/[0.06]'
               }`}
               title="Queue"
               aria-label="Toggle Queue Panel"
@@ -4186,11 +4550,11 @@ export default function App() {
               )}
             </button>
 
-            {/* Desktop Volume Slider */}
-            <div className="hidden lg:flex items-center gap-2 pl-2 border-l border-white/[0.08]">
+            {/* Volume Control */}
+            <div className="hidden lg:flex items-center gap-1.5 pl-1 border-l border-white/[0.08]">
               <button
                 onClick={() => setIsMuted(!isMuted)}
-                className="text-[#9999A6] hover:text-[#F5F5F7] transition-colors cursor-pointer"
+                className="text-zinc-400 hover:text-white transition-colors cursor-pointer p-1"
                 title={isMuted ? 'Unmute' : 'Mute'}
               >
                 {isMuted || volume === 0 ? (
@@ -4213,18 +4577,17 @@ export default function App() {
                   setVolume(parseInt(e.target.value, 10));
                   setIsMuted(false);
                 }}
-                className="w-18 accent-[#D5F36A] h-1 rounded-full cursor-pointer"
+                className="w-16 lg:w-20 accent-[#D5F36A] h-1 bg-white/10 rounded-full cursor-pointer"
               />
             </div>
 
-            {/* Expand Fullscreen Player Button */}
+            {/* Expand Fullscreen Player */}
             <button
               onClick={() => setIsNowPlayingOpen(true)}
-              className="p-2 rounded-full hover:bg-white/[0.08] text-[#9999A6] hover:text-[#D5F36A] active:scale-90 transition-all cursor-pointer"
+              className="p-1.5 text-zinc-400 hover:text-[#D5F36A] hover:bg-white/[0.06] rounded-lg transition-colors cursor-pointer"
               title="Open Now Playing Screen"
-              aria-label="Open Now Playing Screen"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-5 h-5">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-4 h-4">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
               </svg>
             </button>

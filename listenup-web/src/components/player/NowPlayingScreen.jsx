@@ -109,7 +109,7 @@ export default function NowPlayingScreen({
 
   if (!isOpen) return null;
 
-  const thumbnailUrl = currentSong?.thumbnailUrl || 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=600&auto=format&fit=crop&q=80';
+  const thumbnailUrl = currentSong?.thumbnailUrl || '/default-artwork.svg';
   const isFavorite = currentSong ? favorites.some(s => s.id === currentSong.id) : false;
 
   return (
